@@ -5,6 +5,8 @@
 #include <string.h>
 #include <assert.h>
 
+
+// kill server: ps aux | grep server ----- kill -9 with server pid
 int main (void)
 {
     //  Socket to talk to clients
@@ -14,7 +16,7 @@ int main (void)
 
     while (1) {
         char *str = zstr_recv (responder);
-        printf ("Received Hello\n");
+        printf ("Received %s\n", str);
         sleep (1);          //  Do some 'work'
         zstr_send (responder, "World");
         zstr_free (&str);

@@ -7,15 +7,15 @@
 int main(int argc, char** argv) {       
     NOB_GO_REBUILD_URSELF(argc, argv);
 
-    // build 1
+    // build 1: server
     Cmd cmd = {0};
     cmd_append(&cmd, 
         "cc", 
         "server.c",             
         "-I/usr/include",
         "-lczmq",
-        // "-Wall", 
-        // "-Wextra", 
+        "-Wall", 
+        "-Wextra", 
         "-o", "server"                                    
     );
 
@@ -24,19 +24,22 @@ int main(int argc, char** argv) {
         return 1;
     }  
 
-    // build 2
+    // build 2: client
     Cmd cmd2 = {0};
     cmd_append(&cmd2,
         "cc", 
         "client.c",             
         "-I/usr/include",
         "-lczmq",
-        // "-Wall", 
-        // "-Wextra", 
-        "-o", "client"                                    
-    );
-    
-  
+        "-Wall", 
+        "-Wextra", 
+        "-I/usr/local/include",         
+        "-L/usr/local/lib",         
+        "-lraylib", 
+        "-lm",
+        "-o", 
+        "client"                                    
+    );      
 
     if (!cmd_run_sync(cmd2)) {
         nob_log(NOB_ERROR, "Build 2 failed");
