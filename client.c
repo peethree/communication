@@ -1,4 +1,3 @@
-//  Hello World client
 #include <czmq.h>
 #include <stdio.h>
 #include <unistd.h>
@@ -60,11 +59,44 @@ void erase_user_input(UserInput *input)
     }
 }
 
-void init_raylib()
+char* formulate_string_from_user_input(UserInput *input) 
+{    
+    char* str = malloc(sizeof(char) * input->count + 1);    
+    if (!str){
+        return NULL;
+    }
+
+    for (int i = 0; i < input->count; i++) {
+        str[i] = *(input->items[i]);
+    }
+    return str;
+}
+
+void send_user_input(char** user_input, zsock_t *requester) 
+{
+    int request_nbr;
+    for (request_nbr = 0; request_nbr != 10; request_nbr++) {
+        printf("Sending: %s --- %d…\n", *user_input, request_nbr);        
+
+        // send
+        zstr_send(requester, *user_input);
+
+        // receive
+        char *str = zstr_recv(requester);
+        printf("Received:: %s -- %d\n", str, request_nbr);
+
+        zstr_free (&str);
+        sleep(1);
+    }
+}
+
+void init_raylib(zsock_t *requester)
 {
     InitWindow(800, 600, "client");
 
     UserInput input = {0};
+    char* user_string = NULL;    
+    bool user_input_taken = false;
 
     while (!WindowShouldClose())
     {
@@ -73,19 +105,27 @@ void init_raylib()
         ClearBackground(BLACK);
         DrawText("Client", 0, 0, 60, RED);
 
-        // get user input
-        get_user_input(&input);
-
-        // erase
+        get_user_input(&input);       
         erase_user_input(&input);
+        draw_user_input(&input);  
 
-        // draw user input on the screen
-        draw_user_input(&input);
+        if (IsKeyPressed(KEY_ENTER)) {
+            user_input_taken = true;
+        }       
 
-   
+        // only formulate the string once for now
+        if (user_input_taken && !user_string) {
+            user_string = formulate_string_from_user_input(&input);    
+        }
+
+        // broadcast the message to the server
+        if (user_input_taken && user_string) {
+            send_user_input(&user_string, requester);
+        }
 
         EndDrawing();
     }
+    free(user_string);
     CloseWindow();
 }
 
@@ -98,27 +138,27 @@ int main(void)
 
     // start raylib window
     printf("Initializing raylib...\n");
-    init_raylib();
+    init_raylib(requester);
 
     // TODO: inside the raylib window, receive and send messages
     // take user input
     // print received msg
     // send user input as a str
 
-    int request_nbr;
-    for (request_nbr = 0; request_nbr != 10; request_nbr++) {
-        printf ("Sending Hello %d…\n", request_nbr);
+    // int request_nbr;
+    // for (request_nbr = 0; request_nbr != 10; request_nbr++) {
+    //     printf ("Sending Hello %d…\n", request_nbr);
 
-        // send
-        zstr_send (requester, "Hello");
+    //     // send
+    //     zstr_send (requester, "Hello");
 
-        // receive
-        char *str = zstr_recv (requester);
-        printf ("Received:: %s -- %d\n", str, request_nbr);
+    //     // receive
+    //     char *str = zstr_recv (requester);
+    //     printf ("Received:: %s -- %d\n", str, request_nbr);
 
-        // free string mem
-        zstr_free (&str);
-    }
+    //     // free string mem
+    //     zstr_free (&str);
+    // }
     zsock_destroy(&requester);
     return 0;
 }
