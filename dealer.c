@@ -65,7 +65,7 @@ char* formulate_string_from_user_input(UserInput *input)
 {    
     // calculate total length of the resulting string
     int len = 0;
-    for (int i; i < input->count; i++) {
+    for (int i = 0; i < input->count; i++) {
         len += strlen(input->items[i]);
     }
 
