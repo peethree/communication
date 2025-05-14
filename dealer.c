@@ -84,11 +84,8 @@ char* formulate_string_from_user_input(UserInput *input)
 void send_user_input(char** user_input, zsock_t *dealer) 
 {   
     printf("Sending: %s…\n", *user_input);        
-
-    // send
     zstr_send(dealer, *user_input);
 
-    // receive
     char *str = zstr_recv(dealer);
     printf("Received:: %s...\n", str);
 
@@ -99,10 +96,12 @@ void send_user_input(char** user_input, zsock_t *dealer)
 void init_raylib(zsock_t *dealer)
 {
     InitWindow(800, 600, "client");
+    SetTargetFPS(24);
 
     UserInput input = {0};
     char* user_string = NULL;    
     bool user_input_taken = false;
+    bool message_sent = false;
 
     while (!WindowShouldClose())
     {
@@ -125,8 +124,9 @@ void init_raylib(zsock_t *dealer)
         }
 
         // broadcast the message to the server
-        if (user_input_taken && user_string) {
+        if (user_input_taken && user_string && !message_sent) {
             send_user_input(&user_string, dealer);
+            message_sent = true;
         }
 
         EndDrawing();

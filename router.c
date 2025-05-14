@@ -26,9 +26,15 @@ int main (void)
 
         // pop msg content
         zframe_t *message_data = zmsg_pop(msg);   
-        printf("content: %s\n", zframe_strdup(message_data));                
+        printf("content: %s\n", zframe_strdup(message_data));     
         
-        zstr_send(router, "aaaaaaaa");
+        // reply
+        zmsg_t *reply = zmsg_new();
+        zmsg_append(reply, &messenger_id);
+        zmsg_addstr(reply, "message received!");
+        zmsg_send(&reply, router);
     }
+    
+    zsock_destroy(&router);
     return 0;
 }
