@@ -23,8 +23,8 @@ typedef struct {
 void get_user_input(UserInput *input)
 {
     int unicode = GetCharPressed();
-    if (unicode > 0) {
-        char* newChar = malloc(8); 
+    if (unicode > 0) {          
+        char* newChar = malloc(8); // +7 padding to avoid overflow from weird characters
         if (newChar) {
             snprintf(newChar, 8, "%c", unicode);
             nob_da_append(input, newChar);
@@ -32,12 +32,12 @@ void get_user_input(UserInput *input)
     } 
 }
 
+// TODO: have a look at the magic numbers
 void draw_user_input(UserInput *input)
 {
     int pos_x = 10;
     int pos_y = 200;
     
-    // draw the user's input
     for (int i = 0; i < input->count; i++) {
         // calculate how many characters fit per line
         int chars_per_line = (GetScreenWidth() - 20 - pos_x) / 50;  
@@ -63,7 +63,8 @@ void erase_user_input(UserInput *input)
 
 char* formulate_string_from_user_input(UserInput *input) 
 {    
-    char* str = malloc(sizeof(char) * input->count + 1);    
+    // 8 bytes per character here too, since we allow that many in our input
+    char* str = malloc(8 * input->count + 1);    
     if (!str){
         return NULL;
     }
