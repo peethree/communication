@@ -13,28 +13,38 @@ int main (void)
     assert (rc != -1);
 
     while (1) {
-        // message framing is as follows: [identity][message]
+        // message framing is as follows dealer > router > dealer: [sender_id][recipient_id][message_content]
         zmsg_t *msg = zmsg_recv(router);
         if (!msg) {
             break;
         }
         
         printf("Received: \n");
-        // pop id
-        zframe_t *messenger_id = zmsg_pop(msg); 
-        printf("id: %s\n", zframe_strhex(messenger_id));
+        // pop sender id
+        zframe_t *sender_id = zmsg_pop(msg); 
+        printf("sender id: %s\n", zframe_strhex(sender_id));
+
+        // pop recipient id
+        zframe_t *rec_id = zmsg_pop(msg);
+        printf("recipient id: %s\n", zframe_strhex(rec_id));
 
         // pop msg content
         zframe_t *message_data = zmsg_pop(msg);   
-        printf("content: %s\n", zframe_strdup(message_data));     
+        char* content = zframe_strdup(message_data);
+        printf("content: %s\n", content);          
         
         // reply
         zmsg_t *reply = zmsg_new();
-        zmsg_append(reply, &messenger_id);
-        zmsg_addstr(reply, "message received!");
+        zmsg_append(reply, &rec_id);
+        zmsg_addstr(reply, content);
         zmsg_send(&reply, router);
+
+        //cleanup
+        zframe_destroy(&sender_id);
+        zframe_destroy(&rec_id);
+        zframe_destroy(&message_data);
     }
-    
+
     zsock_destroy(&router);
     return 0;
 }

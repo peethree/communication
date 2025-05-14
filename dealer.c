@@ -81,17 +81,31 @@ char* formulate_string_from_user_input(UserInput *input)
     return str;
 }
 
-void send_user_input(char** user_input, zsock_t *dealer) 
+// TODO: accept recipient_id as input 
+void send_user_input(char** user_input, zsock_t *dealer, char* recipient_id) 
 {   
-    printf("Sending: %s…\n", *user_input);        
-    zstr_send(dealer, *user_input);
+    zmsg_t *msg = zmsg_new();
 
-    char *str = zstr_recv(dealer);
-    printf("Received:: %s...\n", str);
+    // the dealer decides the recipient of the msg, recipient is the first frame
+    zframe_t *id = zframe_new(recipient_id, strlen(recipient_id));
+    zmsg_append(msg, &id);
+    zmsg_addstr(msg, *user_input);
 
-    zstr_free(&str);
+    // send
+    printf("Sending to: %s --- %s ...\n", recipient_id, *user_input);   
+    zmsg_send(&msg, dealer);
+
+    // reply
+    zmsg_t *reply = zmsg_recv(dealer);
+    // zframe_t *reply_id = zmsg_pop(reply);
+    zframe_t *message_content = zmsg_pop(reply);
+    printf("Received: %s...\n", zframe_strdup(message_content)); 
+
+    // cleanup
+    // zframe_destroy(&reply_id);
+    zframe_destroy(&message_content);
+    zmsg_destroy(&reply);
 }
-
 
 void init_raylib(zsock_t *dealer)
 {
@@ -125,7 +139,7 @@ void init_raylib(zsock_t *dealer)
 
         // broadcast the message to the server
         if (user_input_taken && user_string && !message_sent) {
-            send_user_input(&user_string, dealer);
+            send_user_input(&user_string, dealer, "user2");
             message_sent = true;
         }
 
