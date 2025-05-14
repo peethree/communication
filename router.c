@@ -10,14 +10,25 @@ int main (void)
 {
     zsock_t *router = zsock_new(ZMQ_ROUTER);
     int rc = zsock_bind(router, "tcp://*:5555");
-    assert (rc == 5555);
+    assert (rc != -1);
 
     while (1) {
-        char *str = zstr_recv(router);
-        printf("Received:: %s\n", str);
-        sleep(1);          
-        zstr_send(router, "World");
-        zstr_free(&str);
+        // message framing is as follows: [identity][message]
+        zmsg_t *msg = zmsg_recv(router);
+        if (!msg) {
+            break;
+        }
+        
+        printf("Received: \n");
+        // pop id
+        zframe_t *messenger_id = zmsg_pop(msg); 
+        printf("id: %s\n", zframe_strhex(messenger_id));
+
+        // pop msg content
+        zframe_t *message_data = zmsg_pop(msg);   
+        printf("content: %s\n", zframe_strdup(message_data));                
+        
+        zstr_send(router, "aaaaaaaa");
     }
     return 0;
 }

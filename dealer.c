@@ -82,22 +82,19 @@ char* formulate_string_from_user_input(UserInput *input)
 }
 
 void send_user_input(char** user_input, zsock_t *dealer) 
-{
-    int request_nbr;
-    for (request_nbr = 0; request_nbr != 10; request_nbr++) {
-        printf("Sending: %s --- %d…\n", *user_input, request_nbr);        
+{   
+    printf("Sending: %s…\n", *user_input);        
 
-        // send
-        zstr_send(dealer, *user_input);
+    // send
+    zstr_send(dealer, *user_input);
 
-        // receive
-        char *str = zstr_recv(dealer);
-        printf("Received:: %s -- %d\n", str, request_nbr);
+    // receive
+    char *str = zstr_recv(dealer);
+    printf("Received:: %s...\n", str);
 
-        zstr_free(&str);
-        sleep(1);
-    }
+    zstr_free(&str);
 }
+
 
 void init_raylib(zsock_t *dealer)
 {
