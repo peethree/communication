@@ -11,12 +11,12 @@ int main(int argc, char** argv) {
     Cmd cmd = {0};
     cmd_append(&cmd, 
         "cc", 
-        "server.c",             
+        "router.c",             
         "-I/usr/include",
         "-lczmq",
         "-Wall", 
         "-Wextra", 
-        "-o", "server"                                    
+        "-o", "router"                                    
     );
 
     if (!cmd_run_sync(cmd)) {
@@ -28,7 +28,7 @@ int main(int argc, char** argv) {
     Cmd cmd2 = {0};
     cmd_append(&cmd2,
         "cc", 
-        "client.c",             
+        "dealer.c",             
         "-I/usr/include",
         "-lczmq",
         "-Wall", 
@@ -38,7 +38,7 @@ int main(int argc, char** argv) {
         "-lraylib", 
         "-lm",
         "-o", 
-        "client"                                    
+        "dealer"                                    
     );      
 
     if (!cmd_run_sync(cmd2)) {

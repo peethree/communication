@@ -1,12 +1,14 @@
 #include <czmq.h>
 #include <stdio.h>
 #include <unistd.h>
+#include <stdbool.h>
 #include <string.h>
 
 #define NOB_IMPLEMENTATION
 #define NOB_STRIP_PREFIX
 #include "nob.h"
 
+// raylib LOG enums interfere with system.h logging
 #undef LOG_DEBUG
 #undef LOG_INFO
 #undef LOG_WARNING
@@ -66,31 +68,32 @@ char* formulate_string_from_user_input(UserInput *input)
         return NULL;
     }
 
+    // input->items: char**, needs to be dereferenced to char* for the assignment to str
     for (int i = 0; i < input->count; i++) {
         str[i] = *(input->items[i]);
     }
     return str;
 }
 
-void send_user_input(char** user_input, zsock_t *requester) 
+void send_user_input(char** user_input, zsock_t *dealer) 
 {
     int request_nbr;
     for (request_nbr = 0; request_nbr != 10; request_nbr++) {
         printf("Sending: %s --- %d…\n", *user_input, request_nbr);        
 
         // send
-        zstr_send(requester, *user_input);
+        zstr_send(dealer, *user_input);
 
         // receive
-        char *str = zstr_recv(requester);
+        char *str = zstr_recv(dealer);
         printf("Received:: %s -- %d\n", str, request_nbr);
 
-        zstr_free (&str);
+        zstr_free(&str);
         sleep(1);
     }
 }
 
-void init_raylib(zsock_t *requester)
+void init_raylib(zsock_t *dealer)
 {
     InitWindow(800, 600, "client");
 
@@ -120,7 +123,7 @@ void init_raylib(zsock_t *requester)
 
         // broadcast the message to the server
         if (user_input_taken && user_string) {
-            send_user_input(&user_string, requester);
+            send_user_input(&user_string, dealer);
         }
 
         EndDrawing();
@@ -132,34 +135,17 @@ void init_raylib(zsock_t *requester)
 int main(void)
 {   
     // connect to server
-    printf ("Connecting to hello world server…\n");
-    zsock_t *requester = zsock_new (ZMQ_REQ);
-    zsock_connect (requester, "tcp://localhost:5555");
+    printf ("Connecting to server…\n");    
+    zsock_t *dealer = zsock_new(ZMQ_DEALER);
+    // TODO: each user should be able to set their own account, add a db?
+    zsock_set_identity(dealer, "user1");
+    zsock_connect(dealer, "tcp://localhost:5555");
 
-    // start raylib window
+    // start raylib window and pass along the connected socket
     printf("Initializing raylib...\n");
-    init_raylib(requester);
+    init_raylib(dealer);
 
-    // TODO: inside the raylib window, receive and send messages
-    // take user input
-    // print received msg
-    // send user input as a str
-
-    // int request_nbr;
-    // for (request_nbr = 0; request_nbr != 10; request_nbr++) {
-    //     printf ("Sending Hello %d…\n", request_nbr);
-
-    //     // send
-    //     zstr_send (requester, "Hello");
-
-    //     // receive
-    //     char *str = zstr_recv (requester);
-    //     printf ("Received:: %s -- %d\n", str, request_nbr);
-
-    //     // free string mem
-    //     zstr_free (&str);
-    // }
-    zsock_destroy(&requester);
+    zsock_destroy(&dealer);
     return 0;
 }
 
