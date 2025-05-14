@@ -11,6 +11,7 @@ int main (void)
     zsock_t *router = zsock_new(ZMQ_ROUTER);
     int rc = zsock_bind(router, "tcp://*:5555");
     assert (rc != -1);
+    printf("router bound to: %d\n", rc);
 
     while (1) {
         // message framing is as follows dealer > router > dealer: [sender_id][recipient_id][message_content]

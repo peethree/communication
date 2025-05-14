@@ -14,11 +14,27 @@
 #undef LOG_WARNING
 #include <raylib.h>
 
+// TODO: have the raylib window and message receiving on seperate threads so receiving doesn't block and raylib loop can go on as usual
+#define MAX_MSG_LEN 256 * 4
+#define MAX_ID_LEN 64
+#include <pthread.h>
+
 typedef struct {
     char** items;
     int capacity;
     int count;
 } UserInput;
+
+typedef struct {
+    char most_recent_received_message[MAX_MSG_LEN];
+    char send_message[MAX_MSG_LEN];
+    char recipient_id[MAX_ID_LEN];
+    char* user_input;
+    zsock_t *dealer;    
+    pthread_mutex_t mutex;    
+    bool running;
+    bool message_to_send;
+} Receiver;
 
 void get_user_input(UserInput *input)
 {
@@ -81,38 +97,100 @@ char* formulate_string_from_user_input(UserInput *input)
     return str;
 }
 
-// TODO: accept recipient_id as input 
-void send_user_input(char** user_input, zsock_t *dealer, char* recipient_id) 
+// copy user input into message buffer of the second thread
+void send_user_input(const char* user_input, char* recipient_id, Receiver *args) 
 {   
-    zmsg_t *msg = zmsg_new();
+    pthread_mutex_lock(&args->mutex);
+        strncpy(args->send_message, user_input, MAX_MSG_LEN - 1);
+        args->send_message[MAX_MSG_LEN - 1] = '\0';
 
-    // the dealer decides the recipient of the msg, recipient is the first frame
-    zframe_t *id = zframe_new(recipient_id, strlen(recipient_id));
-    zmsg_append(msg, &id);
-    zmsg_addstr(msg, *user_input);
+        strncpy(args->recipient_id, recipient_id, MAX_ID_LEN - 1);
+        args->recipient_id[MAX_ID_LEN - 1] = '\0';
 
-    // send
-    printf("Sending to: %s --- %s ...\n", recipient_id, *user_input);   
-    zmsg_send(&msg, dealer);
-
-    // reply
-    zmsg_t *reply = zmsg_recv(dealer);
-    // zframe_t *reply_id = zmsg_pop(reply);
-    zframe_t *message_content = zmsg_pop(reply);
-    printf("Received: %s...\n", zframe_strdup(message_content)); 
-
-    // cleanup
-    // zframe_destroy(&reply_id);
-    zframe_destroy(&message_content);
-    zmsg_destroy(&reply);
+        args->message_to_send = true;
+    pthread_mutex_unlock(&args->mutex);
 }
 
-void init_raylib(zsock_t *dealer)
+// (required signature for pthread_create() function in C.)
+void *receive_and_send_message(void *args_ptr)
+{
+    Receiver *args = (Receiver *)args_ptr;
+
+    while (args->running && !zsys_interrupted) { //  CZMQ: "Global signal indicator, TRUE when user presses Ctrl-C or the process"  
+        pthread_mutex_lock(&args->mutex);
+            bool send = args->message_to_send;
+            char msg_copy[MAX_MSG_LEN];
+            char id_copy[MAX_ID_LEN];
+
+            strncpy(msg_copy, args->send_message, MAX_MSG_LEN);
+            msg_copy[MAX_MSG_LEN - 1] = '\0';
+
+            strncpy(id_copy, args->recipient_id, MAX_ID_LEN); 
+            id_copy[MAX_ID_LEN - 1] = '\0';
+
+            args->message_to_send = false;
+        pthread_mutex_unlock(&args->mutex);
+
+        // new message 2 send        
+        if (send) {   
+            zmsg_t *msg = zmsg_new();
+
+            // the dealer decides the recipient of the msg, recipient is the first frame
+            zframe_t *id = zframe_new(id_copy, strlen(id_copy));
+            zmsg_append(msg, &id);
+            zmsg_addstr(msg, msg_copy);
+        
+            // send
+            printf("Sending to: %s --- %s ...\n", args->recipient_id, args->user_input);   
+            zmsg_send(&msg, args->dealer);
+            args->message_to_send = false;
+        }        
+        
+        // reply
+        zmsg_t *reply = zmsg_recv(args->dealer);
+        if (reply) {
+            // reply id
+            zframe_t *reply_id = zmsg_pop(reply);
+
+            // actual message
+            zframe_t *message_content = zmsg_pop(reply);
+            if (message_content) {
+                char *text = zframe_strdup(message_content);
+                printf("Received: %s...\n", text); 
+
+                // lock mutex and copy the most recent message into args field
+                pthread_mutex_lock(&args->mutex);
+
+                    strncpy(args->most_recent_received_message, text, MAX_MSG_LEN - 1);
+                    args->most_recent_received_message[MAX_MSG_LEN - 1] = '\0';
+
+                // unlock n clean up 
+                pthread_mutex_unlock(&args->mutex);
+
+                free(text);
+                zframe_destroy(&message_content);
+            }   
+            zframe_destroy(&reply_id);   
+            zmsg_destroy(&reply);          
+        }           
+    }
+    return NULL;
+}
+
+void free_user_input(UserInput *input, char** user_string) 
+{
+    input->count = 0;
+    free(*user_string);
+    *user_string = NULL;
+}
+
+void init_raylib(Receiver *args)
 {
     InitWindow(800, 600, "client");
     SetTargetFPS(24);
 
     UserInput input = {0};
+
     char* user_string = NULL;    
     bool user_input_taken = false;
     bool message_sent = false;
@@ -139,16 +217,24 @@ void init_raylib(zsock_t *dealer)
 
         // broadcast the message to the server
         if (user_input_taken && user_string && !message_sent) {
-            send_user_input(&user_string, dealer, "user2");
+            send_user_input(user_string, "user2", args);
             message_sent = true;
+        }
+        
+        // clear message / reset states for next message
+        if (message_sent) {
+            message_sent = false;
+            user_input_taken = false;
+            free_user_input(&input, &user_string);            
         }
 
         EndDrawing();
-    }
-    free(user_string);
+    }    
     CloseWindow();
 }
 
+// TODO: show incoming messages inside the raylib window, 
+// reset user input when enter is pressed to allow for multiple messages following after
 int main(void)
 {   
     // connect to server
@@ -158,10 +244,30 @@ int main(void)
     zsock_set_identity(dealer, "user1");
     zsock_connect(dealer, "tcp://localhost:5555");
 
-    // start raylib window and pass along the connected socket
-    printf("Initializing raylib...\n");
-    init_raylib(dealer);
+    // launch a second thread for the message receiver function
+    Receiver args = {
+        .dealer = dealer,
+        .running = true,
+        .message_to_send = false
+    };
 
+    pthread_mutex_init(&args.mutex, NULL);
+    pthread_t receiver_thread;
+
+    if (pthread_create(&receiver_thread, NULL, receive_and_send_message, &args) != 0) {
+        fprintf(stderr, "Failed to create receiver thread\n");
+        zsock_destroy(&dealer);
+        return 1;
+    }
+
+    // start raylib window and pass along the Receiver struct which holds the connected socket (dealer is not thread-safe)
+    printf("Initializing raylib...\n");
+    init_raylib(&args);
+
+    // cleanup receiver thread and its mutex
+    args.running = false;
+    pthread_join(receiver_thread, NULL);
+    pthread_mutex_destroy(&args.mutex);
     zsock_destroy(&dealer);
     return 0;
 }
