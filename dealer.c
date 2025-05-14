@@ -63,15 +63,20 @@ void erase_user_input(UserInput *input)
 
 char* formulate_string_from_user_input(UserInput *input) 
 {    
-    // 8 bytes per character here too, since we allow that many in our input
-    char* str = malloc(8 * input->count + 1);    
-    if (!str){
-        return NULL;
+    // calculate total length of the resulting string
+    int len = 0;
+    for (int i; i < input->count; i++) {
+        len += strlen(input->items[i]);
     }
 
-    // input->items: char**, needs to be dereferenced to char* for the assignment to str
+    // allocate memory based on total length
+    char* str = malloc(len + 1);    
+    if (!str) return NULL;
+    
+    // strcat expects str to start with a '\0' else it won't know where to start appending
+    str[0] = '\0';
     for (int i = 0; i < input->count; i++) {
-        str[i] = *(input->items[i]);
+        strcat(str, input->items[i]);
     }
     return str;
 }
