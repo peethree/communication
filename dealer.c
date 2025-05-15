@@ -3,6 +3,7 @@
 #include <unistd.h>
 #include <stdbool.h>
 #include <string.h>
+#include <time.h>
 
 #define NOB_IMPLEMENTATION
 #define NOB_STRIP_PREFIX
@@ -26,16 +27,23 @@ typedef struct {
 } UserInput;
 
 typedef struct {
-    char** items;
+    char sent_msg[MAX_MSG_LEN];
+    char received_msg[MAX_MSG_LEN];
+    bool sent;
+    bool received;
+} Message;
+
+typedef struct {
+    Message *items;
     int capacity;
     int count;
 } ChatHistory;
 
 typedef struct {
     char most_recent_received_message[MAX_MSG_LEN];
+    char message_to_send[MAX_MSG_LEN];
     char sender_id[MAX_ID_LEN];
-    char recipient_id[MAX_ID_LEN];
-    char send_message[MAX_MSG_LEN];
+    char recipient_id[MAX_ID_LEN];    
 } MessageData;
 
 typedef struct {
@@ -63,19 +71,19 @@ void get_user_input(UserInput *input)
 void draw_user_input(UserInput *input)
 {
     int pos_x = 10;
-    int pos_y = 200;
+    int pos_y = 560;
     
     for (int i = 0; i < input->count; i++) {
         // calculate how many characters fit per line
-        int chars_per_line = (GetScreenWidth() - 20 - pos_x) / 50;  
+        int chars_per_line = (GetScreenWidth() - 20 - pos_x) / 20;  
         int line = i / chars_per_line;
         
         // position on the current line
         int line_position = i % chars_per_line;                
-        int current_x = pos_x + (line_position * 50);
-        int current_y = pos_y + (line * 60);
+        int current_x = pos_x + (line_position * 20);
+        int current_y = pos_y + (line * 25);
         
-        if (input->items[i]) DrawText(input->items[i], current_x, current_y, 60, RED);
+        if (input->items[i]) DrawText(input->items[i], current_x, current_y, 20, RED);
     }
 }
 
@@ -114,8 +122,8 @@ void send_user_input(const char* user_input, char* recipient_id, Receiver *args)
     // mutex
     // printf("preparing to send your message...\n");
     pthread_mutex_lock(&args->mutex);
-        strncpy(args->message_data.send_message, user_input, MAX_MSG_LEN - 1);
-        args->message_data.send_message[MAX_MSG_LEN - 1] = '\0';
+        strncpy(args->message_data.message_to_send, user_input, MAX_MSG_LEN - 1);
+        args->message_data.message_to_send[MAX_MSG_LEN - 1] = '\0';
 
         strncpy(args->message_data.recipient_id, recipient_id, MAX_ID_LEN - 1);
         args->message_data.recipient_id[MAX_ID_LEN - 1] = '\0';
@@ -125,9 +133,11 @@ void send_user_input(const char* user_input, char* recipient_id, Receiver *args)
     // printf("succesfully prepared your message...\n");
 }
 
-// this function will run concurrent with the raylib window
-// (required signature for pthread_create() function in C.)
-void *receive_and_send_message(void *args_ptr)
+/* 
+this function will run concurrent with the raylib window
+(it follows the required signature for the pthread_create() function in C.) 
+*/
+void *receive_and_send_message(void *args_ptr) 
 {
     Receiver *args = (Receiver *)args_ptr;
     zpoller_t *poller = zpoller_new(args->dealer, NULL);
@@ -140,19 +150,17 @@ void *receive_and_send_message(void *args_ptr)
             break; 
         }
 
-        // Router sends: [recipient routing ID][sender ID][message content]
-        // Dealer receives: [sender ID][message content]
+        /* 
+        Router sends: [recipient routing ID][sender ID][message content]
+        Dealer receives: [sender ID][message content] 
+        */
         if (signaled_socket == args->dealer) {
-            // reply (this blocks)
             zmsg_t *reply = zmsg_recv(args->dealer);
-            if (reply) {
-                // frame 0
-                zframe_t *sender_id = zmsg_pop(reply);
-                // if (sender_id){
-                //     zframe_destroy(&sender_id);
-                // }
 
-                // frame 1
+            // there is a reply
+            if (reply) {
+
+                zframe_t *sender_id = zmsg_pop(reply);
                 zframe_t *message_content = zmsg_pop(reply);
 
                 if (message_content) {
@@ -173,9 +181,8 @@ void *receive_and_send_message(void *args_ptr)
                     free(sender);
                     zframe_destroy(&message_content);
 
-                    printf("most recently received message: %s\n", args->message_data.most_recent_received_message);
+                    // printf("most recently received message: %s\n", args->message_data.most_recent_received_message);
                 }   
-                // zframe_destroy(&reply_id);   
                 zmsg_destroy(&reply);        
             }  
         }   
@@ -186,7 +193,7 @@ void *receive_and_send_message(void *args_ptr)
             char msg_copy[MAX_MSG_LEN];
             char id_copy[MAX_ID_LEN];
 
-            strncpy(msg_copy, args->message_data.send_message, MAX_MSG_LEN);
+            strncpy(msg_copy, args->message_data.message_to_send, MAX_MSG_LEN);
             msg_copy[MAX_MSG_LEN - 1] = '\0';
 
             strncpy(id_copy, args->message_data.recipient_id, MAX_ID_LEN); 
@@ -220,47 +227,82 @@ void free_user_input(UserInput *input, char** user_string)
     *user_string = NULL;
 }
 
+// reading data from args will need a mutex to prevent stale data reads
 void add_to_chat_log(Receiver *args, ChatHistory *chat_log)
 {
-    // reading data from args will need a mutex to prevent stale data reads
+    pthread_mutex_lock(&args->mutex);        
+
+        char *inc_msg = args->message_data.most_recent_received_message;
+
+        // if chat_log is not empty, check the last received message
+        for (int i = chat_log->count - 1; i >= 0; i--) {
+            if (chat_log->items[i].received) {                
+                if (strcmp(chat_log->items[i].received_msg, inc_msg) == 0) {
+                    pthread_mutex_unlock(&args->mutex);
+                    return;
+                }
+                break; 
+            }
+        }
+
+        char *msg_copy = strdup(inc_msg);
+
+        Message msg = {0};
+        strncpy(msg.received_msg, msg_copy, MAX_MSG_LEN);
+        msg.received = true;
+
+        da_append(chat_log, msg);
+    pthread_mutex_unlock(&args->mutex);
+}
+
+// slight alternatation of the func above to avoid duplicate adds to chat_log
+void add_sent_message_to_chat_log(Receiver *args, ChatHistory *chat_log)
+{
     pthread_mutex_lock(&args->mutex);
-        char *msg_copy = strdup(args->message_data.most_recent_received_message);
-        da_append(chat_log, msg_copy);
+        char *msg_copy = strdup(args->message_data.message_to_send);
+
+        Message msg = {0};
+        strncpy(msg.sent_msg, msg_copy, MAX_MSG_LEN);
+        msg.sent = true;
+
+        da_append(chat_log, msg);
     pthread_mutex_unlock(&args->mutex);
 }
 
 bool check_for_new_message(Receiver *args, ChatHistory *chat_log)
 {
     pthread_mutex_lock(&args->mutex);
+
         // first message
         if (chat_log->count == 0) {
             pthread_mutex_unlock(&args->mutex);
             return true;
         }
         
-        const char* last_indexed_chat_log_item = chat_log->items[chat_log->count - 1];
-        const char* latest_received_message_in_args = args->message_data.most_recent_received_message;
+        const char* last_indexed_chat_log_item = chat_log->items[chat_log->count - 1].received_msg;
+        const char* latest_received_message = args->message_data.most_recent_received_message;
         
         // compare the most recent received message with the final entry in chat log
-        // if they differ, there is a new message
-        bool new = (strcmp(last_indexed_chat_log_item, latest_received_message_in_args) != 0);
+        // if they differ, it's new and should be added to the chat log
+        bool new = (strcmp(last_indexed_chat_log_item, latest_received_message) != 0);
 
     pthread_mutex_unlock(&args->mutex);
-    return new;
+    return new;    
 }
 
 void draw_chat_history(ChatHistory *chat_log)
 {
     for (int i = 0; i < chat_log->count; i++){
-        DrawText(chat_log->items[i], 10, 300 + (i * 50), 20, WHITE);
+        DrawText(chat_log->items[i].received_msg, 10, 0 + (i * 32), 20, WHITE);
+        DrawText(chat_log->items[i].sent_msg, 400, 0 + (i * 32), 20, WHITE);
     }
 }
 
 void free_chat_log(ChatHistory *chat_log) 
 {
-    for (int i = 0; i < chat_log->count; i++) {
-        free(chat_log->items[i]);
-    }
+    // for (int i = 0; i < chat_log->count; i++) {
+    //     free(chat_log->items[i].received_msg);
+    // }
     chat_log->count = 0;
 }
 
@@ -287,6 +329,7 @@ void init_raylib(Receiver *args)
     bool user_input_taken = false;
     bool message_sent = false;
     bool new_message_received = false;
+    // bool new_message_sent = false;
 
     ChatHistory chat_log = {0};
 
@@ -300,13 +343,21 @@ void init_raylib(Receiver *args)
         BeginDrawing();
 
         ClearBackground(BLACK);
+
         BeginMode2D(camera);
+
+        // draw inside raylib window if chat log is populated
+        if (chat_log.count > 0) {
+            draw_chat_history(&chat_log);
+        }    
+
+        EndMode2D();
         // DrawText("Client", 0, 0, 60, RED);
 
         get_user_input(&input);       
-        erase_user_input(&input);
-        draw_user_input(&input);  
+        erase_user_input(&input);     
         mousewheel_scroll(&camera);
+        draw_user_input(&input);  
 
         // prevent empty messages from being sent
         if (IsKeyPressed(KEY_ENTER) && input.count > 0) {
@@ -325,32 +376,28 @@ void init_raylib(Receiver *args)
         }
         
         // clear message / reset states for next message
-        if (message_sent) {
+        if (message_sent) {    
+            add_sent_message_to_chat_log(args, &chat_log);        
             message_sent = false;
-            user_input_taken = false;
+            user_input_taken = false;            
             free_user_input(&input, &user_string);            
         }
         
-        // TODO: show the received messages inside the raylib window        
+        // set the message_received flag to true if there is a new message
         if (!new_message_received) {
             new_message_received = check_for_new_message(args, &chat_log);
         }
 
-        // if there is a new message in most recently received messages, add it to chat log
+        // add new message to chat log
         if (new_message_received) {
             add_to_chat_log(args, &chat_log);
             new_message_received = false;
         }        
 
-        if (chat_log.count > 0) {
-            draw_chat_history(&chat_log);
-        }        
-
-        // save the most recently received message somehow
-        // loop over every message and show them on the screen
-        // move user input to always be at the bottom of the raylib window
-        // use a camera and add scrolling
+        // TODOS:
         // timestamps?
+        // encrypt / decrypt messages?
+        // account creation / database?
 
         EndDrawing();
     }        
@@ -359,17 +406,15 @@ void init_raylib(Receiver *args)
     CloseWindow();
 }
 
-// TODO: show incoming messages inside the raylib window, 
 int main(void)
 {   
     // connect to server
     printf ("Connecting to server…\n");    
     zsock_t *dealer = zsock_new(ZMQ_DEALER);
-    // TODO: each user should be able to set their own account, add a db?
     zsock_set_identity(dealer, "user2");
     zsock_connect(dealer, "tcp://localhost:5555");
 
-    // launch a second thread for the message receiver function
+    // launch a second (concurrent) thread for the message receiver function
     Receiver args = {
         .dealer = dealer,
         .running = true,
@@ -395,7 +440,7 @@ int main(void)
     pthread_join(receiver_thread, NULL);
     pthread_mutex_destroy(&args.mutex);
     zsock_destroy(&dealer);
-    printf("shutdown thread...\n");
+    printf("shutting down receiver thread...\n");
 
     return 0;
 }
