@@ -43,18 +43,18 @@ int main (void)
             char* content = zframe_strdup(message_data);
             printf("content: %s\n", content);          
             
-            // reply
+            // reply ... forward to recipient
             zmsg_t *reply = zmsg_new();
-            zmsg_append(reply, &sender_id);
-            zmsg_addstr(reply, content);
+            zmsg_append(reply, &rec_id);        // ROUTING: destination frame
+            zmsg_append(reply, &sender_id);     // CONTENT: original sender ID (as body)
+            zmsg_append(reply, &message_data);  // CONTENT: message
             zmsg_send(&reply, router);
 
             //cleanup
-            zframe_destroy(&sender_id);
-            zframe_destroy(&message_data);
+            free(content);
+            zmsg_destroy(&msg);
         }
     }
-
     zpoller_destroy(&poller);
     zsock_destroy(&router);
     return 0;
