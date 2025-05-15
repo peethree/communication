@@ -3,6 +3,7 @@
 #include <unistd.h>
 #include <stdbool.h>
 #include <string.h>
+// TODO: add timestamps to chatlog
 #include <time.h>
 
 #define NOB_IMPLEMENTATION
