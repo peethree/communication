@@ -20,7 +20,7 @@ int main(int argc, char** argv) {
     );
 
     if (!cmd_run_sync(cmd)) {
-        nob_log(NOB_ERROR, "Build 1 failed");
+        nob_log(NOB_ERROR, "Build 1 (router) failed");
         return 1;
     }  
 
@@ -42,7 +42,7 @@ int main(int argc, char** argv) {
     );      
 
     if (!cmd_run_sync(cmd2)) {
-        nob_log(NOB_ERROR, "Build 2 failed");
+        nob_log(NOB_ERROR, "Build 2 (dealer) failed");
         return 1;
     }    
 

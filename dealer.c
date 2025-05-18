@@ -3,7 +3,6 @@
 #include <unistd.h>
 #include <stdbool.h>
 #include <string.h>
-// TODO: add timestamps to chatlog
 #include <time.h>
 
 #define NOB_IMPLEMENTATION
@@ -31,6 +30,7 @@ typedef struct {
     char received_msg[MAX_MSG_LEN];
     bool sent;
     bool received;
+    time_t timestamp;
 } Message;
 
 typedef struct {
@@ -241,12 +241,15 @@ void add_to_chat_log(Receiver *args, ChatHistory *chat_log)
             return; 
         }
 
+        time_t current_time;
+        time(&current_time);   
+                
         char *sender = args->message_data.sender_id;
 
         // by prefixing the message with a log "[user1]: bla-bla-bla", message might end up being truncated, so adding extra memory to the buffer here.
         // magic number needs to be fixed in the future based on max user name length I reckon.
         char formatted_msg_buffer[MAX_MSG_LEN + 100];
-        snprintf(formatted_msg_buffer, sizeof(formatted_msg_buffer), "[%s]: %s", sender, inc_msg);
+        snprintf(formatted_msg_buffer, sizeof(formatted_msg_buffer) + 1, "[%s]: %s", sender, inc_msg);
 
         // if chat_log is not empty, check the last received message
         for (int i = chat_log->count - 1; i >= 0; i--) {
@@ -264,6 +267,7 @@ void add_to_chat_log(Receiver *args, ChatHistory *chat_log)
         strncpy(msg.received_msg, formatted_msg_buffer, MAX_MSG_LEN - 1);
         msg.received_msg[MAX_MSG_LEN - 1] = '\0';
         msg.received = true;
+        msg.timestamp = current_time;
 
         da_append(chat_log, msg);
 
@@ -282,12 +286,16 @@ void add_sent_message_to_chat_log(Receiver *args, ChatHistory *chat_log)
             return; 
         }
 
+        time_t current_time;   
+        time(&current_time);      
+
         char *sender = zsock_identity(args->dealer);
         char formatted_msg_buffer[MAX_MSG_LEN + 100];
 
         Message msg = {0};
-        snprintf(msg.sent_msg, sizeof(formatted_msg_buffer), "[%s]: %s", sender, sent_message);
+        snprintf(msg.sent_msg, sizeof(formatted_msg_buffer) + 1, "[%s]: %s", sender, sent_message);
         msg.sent = true;
+        msg.timestamp = current_time;
 
         da_append(chat_log, msg);
     pthread_mutex_unlock(&args->mutex);
@@ -316,9 +324,23 @@ bool check_for_new_message(Receiver *args, ChatHistory *chat_log)
 
 void draw_chat_history(ChatHistory *chat_log)
 {
-    for (int i = 0; i < chat_log->count; i++){
-        DrawText(chat_log->items[i].received_msg, 10, 0 + (i * 32), 20, WHITE);
-        DrawText(chat_log->items[i].sent_msg, 400, 0 + (i * 32), 20, WHITE);
+    char time_str[32];
+    
+
+    // for (int i = 0; i < chat_log->count; i++){
+    //     DrawText(chat_log->items[i].received_msg, 10, 0 + (i * 32), 20, WHITE);
+    //     DrawText(chat_log->items[i].sent_msg, 400, 0 + (i * 32), 20, WHITE);
+    // }
+    for (int i = 0; i < chat_log->count; i++) {
+        Message *msg = &chat_log->items[i];
+        strftime(time_str, sizeof(time_str), "%d-%m %H:%M:%S", localtime(&msg->timestamp));
+
+        if (msg->received) {
+            DrawText(TextFormat("%s %s", time_str, msg->received_msg), 10, 0 + (i * 32), 20, WHITE);
+        }
+        if (msg->sent) {
+            DrawText(TextFormat("%s %s", time_str, msg->sent_msg), 10, 0 + (i * 32), 20, WHITE);
+        }
     }
 }
 
@@ -353,7 +375,6 @@ void init_raylib(Receiver *args)
     bool user_input_taken = false;
     bool message_sent = false;
     bool new_message_received = false;
-    // bool new_message_sent = false;
 
     ChatHistory chat_log = {0};
 
@@ -395,7 +416,7 @@ void init_raylib(Receiver *args)
 
         // broadcast the message to the server
         if (user_input_taken && user_string && !message_sent) {
-            send_user_input(user_string, "user2", args);
+            send_user_input(user_string, "user1", args);
             message_sent = true;
         }
         
@@ -435,10 +456,11 @@ int main(void)
     // connect to server
     printf ("Connecting to server…\n");    
     zsock_t *dealer = zsock_new(ZMQ_DEALER);
-    zsock_set_identity(dealer, "user1");
+    zsock_set_identity(dealer, "user2");
     zsock_connect(dealer, "tcp://localhost:5555");
 
-    // launch a second (concurrent) thread for the message receiver function
+    // launch a second (concurrent) thread for the message receiver / sender function
+    // with the goal of not blocking the raylib gameloop 
     Receiver args = {
         .dealer = dealer,
         .running = true,
@@ -460,7 +482,7 @@ int main(void)
     printf("Initializing raylib...\n");
     init_raylib(&args);
 
-    // cleanup receiver thread and its mutex   
+    // cleanup 
     pthread_join(receiver_thread, NULL);
     pthread_mutex_destroy(&args.mutex);
     zsock_destroy(&dealer);
