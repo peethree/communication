@@ -25,12 +25,13 @@ typedef struct {
     int count;
 } UserInput;
 
+// TODO: Dynamically allocate messages instead of statically to save a lot of memory
 typedef struct {
-    char sent_msg[MAX_MSG_LEN];
-    char received_msg[MAX_MSG_LEN];
-    bool sent;
-    bool received;
+    char *sent_msg;
+    char *received_msg;
     time_t timestamp;
+    bool sent;
+    bool received;    
 } Message;
 
 typedef struct {
@@ -40,10 +41,10 @@ typedef struct {
 } ChatHistory;
 
 typedef struct {
-    char most_recent_received_message[MAX_MSG_LEN];
-    char message_to_send[MAX_MSG_LEN];
-    char sender_id[MAX_ID_LEN];
-    char recipient_id[MAX_ID_LEN];    
+    char *most_recent_received_message;
+    char *message_to_send;
+    char *sender_id;
+    char *recipient_id;    
 } MessageData;
 
 typedef struct {
@@ -62,7 +63,7 @@ void get_user_input(UserInput *input)
         char* newChar = malloc(8); // +7 padding to avoid overflow from weird characters
         if (newChar) {
             snprintf(newChar, 8, "%c", unicode);
-            nob_da_append(input, newChar);
+            da_append(input, newChar);
         }
     } 
 }
@@ -100,37 +101,56 @@ char* formulate_string_from_user_input(UserInput *input)
 {    
     // calculate total length of the resulting string
     int len = 0;
-    for (int i = 0; i < input->count; i++) {
-        len += strlen(input->items[i]);
-    }
+    for (int i = 0; i < input->count; i++) len += strlen(input->items[i]);    
 
-    // allocate memory based on total length
+    // allocate memory based on total length of the input
     char* str = malloc(len + 1);    
     if (!str) return NULL;
     
     // strcat expects str to start with a '\0' else it won't know where to start appending
     str[0] = '\0';
-    for (int i = 0; i < input->count; i++) {
-        strcat(str, input->items[i]);
-    }
+    for (int i = 0; i < input->count; i++) strcat(str, input->items[i]);
+
     return str;
 }
 
-// copy user input into message buffer of the second thread
+// copy user input into message buffer of the second thread (args->message_data)
+// TODO: free args->message_data.message_to_send and recipient_id somewhere
 void send_user_input(const char* user_input, char* recipient_id, Receiver *args) 
 {   
-    // mutex
-    // printf("preparing to send your message...\n");
-    pthread_mutex_lock(&args->mutex);
-        strncpy(args->message_data.message_to_send, user_input, MAX_MSG_LEN - 1);
-        args->message_data.message_to_send[MAX_MSG_LEN - 1] = '\0';
+    if (!user_input) {
+        return;
+    }
 
-        strncpy(args->message_data.recipient_id, recipient_id, MAX_ID_LEN - 1);
-        args->message_data.recipient_id[MAX_ID_LEN - 1] = '\0';
+    // mutex
+    pthread_mutex_lock(&args->mutex);
+
+        // make sure the memory is free 
+        // free(args->message_data.message_to_send);
+        // free(args->message_data.recipient_id);
+
+        size_t input_len = strlen(user_input);
+        args->message_data.message_to_send = malloc(input_len + 1);
+        if (args->message_data.message_to_send){
+            strncpy(args->message_data.message_to_send, user_input, input_len);
+            args->message_data.message_to_send[input_len] = '\0';
+        } else {
+            printf("ERROR: buy more RAM!\n");
+            return;
+        }  
+
+        size_t id_len = strlen(recipient_id);
+        args->message_data.recipient_id = malloc(id_len + 1);
+        if (args->message_data.recipient_id) {
+            strncpy(args->message_data.recipient_id, recipient_id, id_len);
+            args->message_data.recipient_id[id_len] = '\0';
+        } else {
+            printf("ERROR: buy more RAM!\n");
+            return;
+        }
 
         args->is_there_a_msg_to_send = true;
     pthread_mutex_unlock(&args->mutex);
-    // printf("succesfully prepared your message...\n");
 }
 
 /* 
@@ -163,59 +183,68 @@ void *receive_and_send_message(void *args_ptr)
                 zframe_t *sender_id = zmsg_pop(reply);
                 zframe_t *message_content = zmsg_pop(reply);
 
-                if (message_content) {
+                if (message_content && sender_id) {
                     char *text = zframe_strdup(message_content);
                     char *sender = zframe_strdup(sender_id);
-                    // printf("Received: %s...\n", text); 
-
+                    assert(text != NULL);
+                    assert(sender != NULL);
                     // mutex 
                     // store message + sender_id for later gui purposes
-                    pthread_mutex_lock(&args->mutex);                    
-                        strncpy(args->message_data.sender_id, sender, MAX_ID_LEN - 1);
-                        args->message_data.sender_id[MAX_ID_LEN - 1] = '\0';
+                    if (text && sender){                    
+                        pthread_mutex_lock(&args->mutex);                    
+                        // strncpy(args->message_data.sender_id, sender, MAX_ID_LEN - 1);
+                        // args->message_data.sender_id[MAX_ID_LEN - 1] = '\0';
 
-                        strncpy(args->message_data.most_recent_received_message, text, MAX_MSG_LEN - 1);
-                        args->message_data.most_recent_received_message[MAX_MSG_LEN - 1] = '\0';
-                    pthread_mutex_unlock(&args->mutex);
+                        // strncpy(args->message_data.most_recent_received_message, text, MAX_MSG_LEN - 1);
+                        // args->message_data.most_recent_received_message[MAX_MSG_LEN - 1] = '\0';
 
-                    free(text);
-                    free(sender);
+                        // free(args->message_data.sender_id);
+                        // free(args->message_data.most_recent_received_message);
+
+                        args->message_data.sender_id = sender;
+                        args->message_data.most_recent_received_message = text;
+
+                        pthread_mutex_unlock(&args->mutex);
+                    } else {
+                        if (text) free(text);
+                        if (sender) free(sender);
+                    }
+
+                    // free(text);
+                    // free(sender);
                     zframe_destroy(&message_content);
-
+                    zframe_destroy(&sender_id);
                     // printf("most recently received message: %s\n", args->message_data.most_recent_received_message);
-                }   
+                } else {
+                    if (message_content) zframe_destroy(&message_content);
+                    if (sender_id) zframe_destroy(&sender_id);
+                }
                 zmsg_destroy(&reply);        
             }  
         }   
 
         // mutex
         pthread_mutex_lock(&args->mutex);
-            bool send = args->is_there_a_msg_to_send;
-            char msg_copy[MAX_MSG_LEN];
-            char id_copy[MAX_ID_LEN];
 
-            strncpy(msg_copy, args->message_data.message_to_send, MAX_MSG_LEN);
-            msg_copy[MAX_MSG_LEN - 1] = '\0';
-
-            strncpy(id_copy, args->message_data.recipient_id, MAX_ID_LEN); 
-            id_copy[MAX_ID_LEN - 1] = '\0';
-
-            args->is_there_a_msg_to_send = false;
-        pthread_mutex_unlock(&args->mutex);
+        bool send = args->is_there_a_msg_to_send;
 
         // there is a new message to send        
         if (send) {   
             zmsg_t *msg = zmsg_new();
 
+            char* sender_id = zsock_identity(args->dealer);
+            assert(sender_id != NULL);
+
             // the dealer decides the recipient of the msg, recipient is the first frame
-            zframe_t *id = zframe_new(id_copy, strlen(id_copy));
+            zframe_t *id = zframe_new(sender_id, strlen(sender_id));
             zmsg_append(msg, &id);
-            zmsg_addstr(msg, msg_copy);
+            zmsg_addstr(msg, args->message_data.message_to_send);
         
             // send
             zmsg_send(&msg, args->dealer);
             args->is_there_a_msg_to_send = false;
         }             
+        pthread_mutex_unlock(&args->mutex);
     }
     zpoller_destroy(&poller);
     return NULL;
@@ -223,9 +252,42 @@ void *receive_and_send_message(void *args_ptr)
 
 void free_user_input(UserInput *input, char** user_string) 
 {
-    input->count = 0;
-    free(*user_string);
-    *user_string = NULL;
+    if (input) {
+        for (int i = 0; i < input->count; i++) {
+            if (input->items[i]) {
+                free(input->items[i]);
+                input->items[i] = NULL;
+            }
+        }
+        input->count = 0;
+    }
+    
+    if (user_string && *user_string) {
+        free(*user_string);
+        *user_string = NULL;
+    }
+}
+
+void free_message_data(MessageData *data)
+{
+    if (data) {
+        if (data->most_recent_received_message) {
+            free(data->most_recent_received_message);
+            data->most_recent_received_message = NULL;
+        }
+        if (data->message_to_send) {
+            free(data->message_to_send);
+            data->message_to_send = NULL;
+        }
+        if (data->sender_id) {
+            free(data->sender_id);
+            data->sender_id = NULL;
+        }
+        if (data->recipient_id) {
+            free(data->recipient_id);
+            data->recipient_id = NULL;
+        }
+    }
 }
 
 // reading data from args will need a mutex to prevent stale data reads
@@ -235,7 +297,7 @@ void add_to_chat_log(Receiver *args, ChatHistory *chat_log)
 
         char *inc_msg = args->message_data.most_recent_received_message;
 
-        // only continue if there are actually messages
+        // only continue if there is an incoming message
         if (!inc_msg || !*inc_msg) {
             pthread_mutex_unlock(&args->mutex);
             return; 
@@ -245,17 +307,19 @@ void add_to_chat_log(Receiver *args, ChatHistory *chat_log)
         time(&current_time);   
                 
         char *sender = args->message_data.sender_id;
+        assert(sender != NULL);
 
-        // by prefixing the message with a log "[user1]: bla-bla-bla", message might end up being truncated, so adding extra memory to the buffer here.
-        // magic number needs to be fixed in the future based on max user name length I reckon.
-        char formatted_msg_buffer[MAX_MSG_LEN + 100];
-        snprintf(formatted_msg_buffer, sizeof(formatted_msg_buffer) + 1, "[%s]: %s", sender, inc_msg);
+        // prefixing the message with a log "[user1]: bla-bla-bla"
+        size_t format_buffer = 5 + strlen(sender) + strlen(inc_msg); // 5: '[]: + " " + null terminator'
+        char msg_buffer[format_buffer];
+
+        snprintf(msg_buffer, sizeof(msg_buffer), "[%s]: %s", sender, inc_msg);
 
         // if chat_log is not empty, check the last received message
         for (int i = chat_log->count - 1; i >= 0; i--) {
             if (chat_log->items[i].received) {       
                 // compare to see if it's a fresh message or if it's already been seen, return in that case         
-                if (strcmp(chat_log->items[i].received_msg, formatted_msg_buffer) == 0) {
+                if (strcmp(chat_log->items[i].received_msg, msg_buffer) == 0) {
                     pthread_mutex_unlock(&args->mutex);
                     return;
                 }
@@ -264,8 +328,12 @@ void add_to_chat_log(Receiver *args, ChatHistory *chat_log)
         }        
 
         Message msg = {0};
-        strncpy(msg.received_msg, formatted_msg_buffer, MAX_MSG_LEN - 1);
-        msg.received_msg[MAX_MSG_LEN - 1] = '\0';
+        // TODO: free this at some point
+        msg.received_msg = strdup(msg_buffer);
+        if (!msg.received) {
+            printf("ERROR: buy more Ram! cannot strdup msg_buffer\n");
+            return;
+        }
         msg.received = true;
         msg.timestamp = current_time;
 
@@ -277,6 +345,7 @@ void add_to_chat_log(Receiver *args, ChatHistory *chat_log)
 // slight alternatation of the func above to avoid duplicate adds to chat_log
 void add_sent_message_to_chat_log(Receiver *args, ChatHistory *chat_log)
 {
+    // TODO: FIX!!!! msg.sent_msg is NULL when it shouldn't be.
     pthread_mutex_lock(&args->mutex);
         char *sent_message = args->message_data.message_to_send;
 
@@ -289,15 +358,30 @@ void add_sent_message_to_chat_log(Receiver *args, ChatHistory *chat_log)
         time_t current_time;   
         time(&current_time);      
 
+        // TODO: zsock_identity might not be the right approach
         char *sender = zsock_identity(args->dealer);
-        char formatted_msg_buffer[MAX_MSG_LEN + 100];
+        assert(sender != NULL);
+
+        size_t format_buffer = 5 + strlen(sender) + strlen(sent_message); // 5: '[]: + " " + null terminator'
+        printf("Buffer size: %zu\n", format_buffer);
+        char msg_buffer[format_buffer];
+        int max_chars = snprintf(msg_buffer, sizeof(msg_buffer), "[%s]: %s", sender, sent_message);
 
         Message msg = {0};
-        snprintf(msg.sent_msg, sizeof(formatted_msg_buffer) + 1, "[%s]: %s", sender, sent_message);
+        // allocate memory for sent_msg
+        msg.sent_msg = strdup(msg_buffer); 
+        if (!msg.sent_msg) {
+            printf("ERROR: buy more Ram, cannot strdup msg_buffer!\n");
+            // free(sender);
+            pthread_mutex_unlock(&args->mutex);
+            return;
+        }
         msg.sent = true;
         msg.timestamp = current_time;
 
         da_append(chat_log, msg);
+
+        // free(sender);
     pthread_mutex_unlock(&args->mutex);
 }
 
@@ -305,18 +389,45 @@ bool check_for_new_message(Receiver *args, ChatHistory *chat_log)
 {
     pthread_mutex_lock(&args->mutex);
 
+        // return early if no message
+        if (!args->message_data.most_recent_received_message) {
+            pthread_mutex_unlock(&args->mutex);
+            return false;
+        }
+
         // first message
         if (chat_log->count == 0) {
             pthread_mutex_unlock(&args->mutex);
             return true;
         }
         
-        const char* last_indexed_chat_log_item = chat_log->items[chat_log->count - 1].received_msg;
-        const char* latest_received_message = args->message_data.most_recent_received_message;
+        const char* latest_received_message = NULL;
+        for (int i = chat_log->count - 1; i >= 0; i--) {
+            if (chat_log->items[i].received && chat_log->items[i].received_msg) {
+                // get most recently received message
+                latest_received_message = chat_log->items[i].received_msg;
+                break;
+            }
+        }
+
+        if (!latest_received_message) {
+            pthread_mutex_unlock(&args->mutex);
+            return true;
+        }
+
+        // format for comparison
+        char *sender = args->message_data.sender_id;
+        char *inc_msg = args->message_data.most_recent_received_message;
+        assert(sender != NULL);
+        assert(inc_msg != NULL);
+
+        size_t format_buffer = 5 + strlen(sender) + strlen(inc_msg); // 5: '[]: + " " + null terminator'
+        char msg_buffer[format_buffer];
+        snprintf(msg_buffer, sizeof(msg_buffer), "[%s]: %s", sender, inc_msg);
         
         // compare the most recent received message with the final entry in chat log
         // if they differ, it's new and should be added to the chat log
-        bool new = (strcmp(last_indexed_chat_log_item, latest_received_message) != 0);
+        bool new = (strcmp(msg_buffer, latest_received_message) != 0);
 
     pthread_mutex_unlock(&args->mutex);
     return new;    
@@ -326,19 +437,15 @@ void draw_chat_history(ChatHistory *chat_log)
 {
     char time_str[32];
     
-
-    // for (int i = 0; i < chat_log->count; i++){
-    //     DrawText(chat_log->items[i].received_msg, 10, 0 + (i * 32), 20, WHITE);
-    //     DrawText(chat_log->items[i].sent_msg, 400, 0 + (i * 32), 20, WHITE);
-    // }
     for (int i = 0; i < chat_log->count; i++) {
-        Message *msg = &chat_log->items[i];
+        Message *msg = &chat_log->items[i];        
         strftime(time_str, sizeof(time_str), "%d-%m %H:%M:%S", localtime(&msg->timestamp));
 
-        if (msg->received) {
+        // prefix with timestamp
+        if (msg->received && msg->received_msg) {
             DrawText(TextFormat("%s %s", time_str, msg->received_msg), 10, 0 + (i * 32), 20, WHITE);
         }
-        if (msg->sent) {
+        if (msg->sent && msg->sent_msg) {
             DrawText(TextFormat("%s %s", time_str, msg->sent_msg), 10, 0 + (i * 32), 20, WHITE);
         }
     }
@@ -346,9 +453,16 @@ void draw_chat_history(ChatHistory *chat_log)
 
 void free_chat_log(ChatHistory *chat_log) 
 {
-    // for (int i = 0; i < chat_log->count; i++) {
-    //     free(chat_log->items[i].received_msg);
-    // }
+    for (int i = 0; i < chat_log->count; i++) {
+        if (chat_log->items[i].received_msg) {
+            free(chat_log->items[i].received_msg);
+            chat_log->items[i].received_msg = NULL;
+        }
+        if (chat_log->items[i].sent_msg) {
+            free(chat_log->items[i].sent_msg);
+            chat_log->items[i].sent_msg = NULL;
+        }
+    }
     chat_log->count = 0;
 }
 
@@ -410,6 +524,7 @@ void init_raylib(Receiver *args)
         }       
 
         // only formulate the string once for now
+        // TODO: free user_string
         if (user_input_taken && !user_string) {
             user_string = formulate_string_from_user_input(&input);    
         }
@@ -425,7 +540,7 @@ void init_raylib(Receiver *args)
             add_sent_message_to_chat_log(args, &chat_log);        
             message_sent = false;
             user_input_taken = false;            
-            free_user_input(&input, &user_string);            
+            // free_user_input(&input, &user_string);            
         }
         
         // set the message_received flag to true if there is a new message
@@ -462,9 +577,16 @@ int main(void)
     // launch a second (concurrent) thread for the message receiver / sender function
     // with the goal of not blocking the raylib gameloop 
     Receiver args = {
+        .message_data = {
+            .message_to_send = NULL,
+            .most_recent_received_message = NULL,
+            .recipient_id = NULL,
+            .sender_id = NULL
+        },
         .dealer = dealer,
         .running = true,
-        .is_there_a_msg_to_send = false
+        .is_there_a_msg_to_send = false,
+        .user_input = NULL
     };
 
     pthread_mutex_init(&args.mutex, NULL);
@@ -483,6 +605,13 @@ int main(void)
     init_raylib(&args);
 
     // cleanup 
+    free_message_data(&args.message_data);
+
+    if (args.user_input) {
+        free(args.user_input);
+        args.user_input = NULL;
+    }
+
     pthread_join(receiver_thread, NULL);
     pthread_mutex_destroy(&args.mutex);
     zsock_destroy(&dealer);
