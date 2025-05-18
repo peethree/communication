@@ -16,8 +16,7 @@
 #undef LOG_WARNING
 #include <raylib.h>
 
-// TODO: have the raylib window and message receiving on seperate threads so receiving doesn't block and raylib loop can go on as usual
-#define MAX_MSG_LEN 256 * 4
+#define MAX_MSG_LEN 512
 #define MAX_ID_LEN 64
 #include <pthread.h>
 
@@ -175,7 +174,8 @@ void *receive_and_send_message(void *args_ptr)
                         strncpy(args->message_data.sender_id, sender, MAX_ID_LEN - 1);
                         args->message_data.sender_id[MAX_ID_LEN - 1] = '\0';
 
-                        snprintf(args->message_data.most_recent_received_message, MAX_MSG_LEN, "[%s]: %s", sender, text);
+                        strncpy(args->message_data.most_recent_received_message, text, MAX_MSG_LEN - 1);
+                        args->message_data.most_recent_received_message[MAX_MSG_LEN - 1] = '\0';
                     pthread_mutex_unlock(&args->mutex);
 
                     free(text);
@@ -235,24 +235,38 @@ void add_to_chat_log(Receiver *args, ChatHistory *chat_log)
 
         char *inc_msg = args->message_data.most_recent_received_message;
 
+        // only continue if there are actually messages
+        if (!inc_msg || !*inc_msg) {
+            pthread_mutex_unlock(&args->mutex);
+            return; 
+        }
+
+        char *sender = args->message_data.sender_id;
+
+        // by prefixing the message with a log "[user1]: bla-bla-bla", message might end up being truncated, so adding extra memory to the buffer here.
+        // magic number needs to be fixed in the future based on max user name length I reckon.
+        char formatted_msg_buffer[MAX_MSG_LEN + 100];
+        snprintf(formatted_msg_buffer, sizeof(formatted_msg_buffer), "[%s]: %s", sender, inc_msg);
+
         // if chat_log is not empty, check the last received message
         for (int i = chat_log->count - 1; i >= 0; i--) {
-            if (chat_log->items[i].received) {                
-                if (strcmp(chat_log->items[i].received_msg, inc_msg) == 0) {
+            if (chat_log->items[i].received) {       
+                // compare to see if it's a fresh message or if it's already been seen, return in that case         
+                if (strcmp(chat_log->items[i].received_msg, formatted_msg_buffer) == 0) {
                     pthread_mutex_unlock(&args->mutex);
                     return;
                 }
                 break; 
             }
-        }
-
-        char *msg_copy = strdup(inc_msg);
+        }        
 
         Message msg = {0};
-        strncpy(msg.received_msg, msg_copy, MAX_MSG_LEN);
+        strncpy(msg.received_msg, formatted_msg_buffer, MAX_MSG_LEN - 1);
+        msg.received_msg[MAX_MSG_LEN - 1] = '\0';
         msg.received = true;
 
         da_append(chat_log, msg);
+
     pthread_mutex_unlock(&args->mutex);
 }
 
@@ -260,10 +274,19 @@ void add_to_chat_log(Receiver *args, ChatHistory *chat_log)
 void add_sent_message_to_chat_log(Receiver *args, ChatHistory *chat_log)
 {
     pthread_mutex_lock(&args->mutex);
-        char *msg_copy = strdup(args->message_data.message_to_send);
+        char *sent_message = args->message_data.message_to_send;
+
+        // not necessary per se, but a precaution
+        if (!sent_message || !*sent_message) {
+            pthread_mutex_unlock(&args->mutex);
+            return; 
+        }
+
+        char *sender = zsock_identity(args->dealer);
+        char formatted_msg_buffer[MAX_MSG_LEN + 100];
 
         Message msg = {0};
-        strncpy(msg.sent_msg, msg_copy, MAX_MSG_LEN);
+        snprintf(msg.sent_msg, sizeof(formatted_msg_buffer), "[%s]: %s", sender, sent_message);
         msg.sent = true;
 
         da_append(chat_log, msg);
@@ -372,7 +395,7 @@ void init_raylib(Receiver *args)
 
         // broadcast the message to the server
         if (user_input_taken && user_string && !message_sent) {
-            send_user_input(user_string, "user1", args);
+            send_user_input(user_string, "user2", args);
             message_sent = true;
         }
         
@@ -412,7 +435,7 @@ int main(void)
     // connect to server
     printf ("Connecting to server…\n");    
     zsock_t *dealer = zsock_new(ZMQ_DEALER);
-    zsock_set_identity(dealer, "user2");
+    zsock_set_identity(dealer, "user1");
     zsock_connect(dealer, "tcp://localhost:5555");
 
     // launch a second (concurrent) thread for the message receiver function
