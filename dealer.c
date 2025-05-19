@@ -171,19 +171,16 @@ void *receive_messages(void *args_ptr)
             continue;
         }
 
-        printf("there is a reply\n");
-
         zframe_t *sender_id = zmsg_pop(reply);
         zframe_t *message_content = zmsg_pop(reply);      
 
         if (message_content && sender_id) {
             char *text = zframe_strdup(message_content);
             char *sender = zframe_strdup(sender_id);
-            printf("sender id: %s\n", sender);
-            printf("reply msg content: %s\n", text);
 
             assert(text != NULL);
             assert(sender != NULL);
+
             char* self_id = zsock_identity(args->dealer);
 
             // kill the thread in case of receive thread blocking
@@ -195,27 +192,10 @@ void *receive_messages(void *args_ptr)
             }
 
             if (text && sender){        
-                printf("there is text + sender, proceed\n");        
-                // only store message + sender_id for later gui purposes when sender isn't yourself
-
-                printf("DEBUG sender (string): %s\n", sender);
-                printf("DEBUG self_id (string): %s\n", self_id);
-
-                for (size_t i = 0; i < strlen(sender); ++i) {
-                    printf("%02x ", (unsigned char)sender[i]);
-                }
-                printf("\n");
-
-                for (size_t i = 0; i < strlen(self_id); ++i) {
-                    printf("%02x ", (unsigned char)self_id[i]);
-                }
-                printf("\n");
                 if (strcmp(sender, self_id) != 0){
                     pthread_mutex_lock(&args->mutex); 
                     args->message_data.sender_id = sender;
                     args->message_data.most_recent_received_message = text;
-                    printf("args->message_data id: %s\n", args->message_data.sender_id);
-                    printf("args->message_data received msg: %s\n", args->message_data.most_recent_received_message);
                 }  
                 pthread_mutex_unlock(&args->mutex);
             }
@@ -223,9 +203,7 @@ void *receive_messages(void *args_ptr)
                 free(text);
                 free(sender);
             } 
-        } else {
-            printf("no message_content or sender_id found in received message\n");
-        }
+        } 
         zframe_destroy(&message_content);
         zframe_destroy(&sender_id);
         // printf("most recently received message: %s\n", args->message_data.most_recent_received_message);
@@ -338,7 +316,6 @@ void add_to_chat_log(Receiver *args, ChatHistory *chat_log)
     char msg_buffer[format_buffer];
 
     snprintf(msg_buffer, sizeof(msg_buffer), "[%s]: %s", sender, inc_msg);
-    printf("message buffer of received message: %s\n", msg_buffer);
 
     // if chat_log is not empty, check the last received message
     for (int i = chat_log->count - 1; i >= 0; i--) {
@@ -353,9 +330,7 @@ void add_to_chat_log(Receiver *args, ChatHistory *chat_log)
     }        
 
     Message msg = {0};
-    // TODO: free this at some point
     msg.received_msg = strdup(msg_buffer);
-    printf("msg.received_msg = %s\n", msg.received_msg);
     if (!msg.received_msg) {
         printf("ERROR: buy more Ram! cannot strdup msg_buffer (add to chatlog)\n");
         return;
@@ -441,8 +416,6 @@ bool check_for_new_message(Receiver *args, ChatHistory *chat_log)
             break;
         }
     }
-
-    printf("latest received message: %s\n", latest_received_message);
 
     // probably also not a necessary check
     if (!latest_received_message) {
