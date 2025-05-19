@@ -26,7 +26,6 @@ typedef struct {
     int count;
 } UserInput;
 
-// TODO: Dynamically allocate messages instead of statically to save a lot of memory
 typedef struct {
     char *sent_msg;
     char *received_msg;
@@ -74,18 +73,20 @@ void draw_user_input(UserInput *input)
 {
     int pos_x = 10;
     int pos_y = 560;
+
+    int fontsize = 20;
     
     for (int i = 0; i < input->count; i++) {
         // calculate how many characters fit per line
-        int chars_per_line = (GetScreenWidth() - 20 - pos_x) / 20;  
+        int chars_per_line = (GetScreenWidth() - fontsize - pos_x) / fontsize;  
         int line = i / chars_per_line;
         
         // position on the current line
         int line_position = i % chars_per_line;                
-        int current_x = pos_x + (line_position * 20);
+        int current_x = pos_x + (line_position * fontsize);
         int current_y = pos_y + (line * 25);
         
-        if (input->items[i]) DrawText(input->items[i], current_x, current_y, 20, RED);
+        if (input->items[i]) DrawText(input->items[i], current_x, current_y, fontsize, RED);
     }
 }
 
@@ -115,8 +116,7 @@ char* formulate_string_from_user_input(UserInput *input)
     return str;
 }
 
-// copy user input into message buffer of the second thread (args->message_data)
-// TODO: free args->message_data.message_to_send and recipient_id somewhere
+// copy user input into message buffer of the send message thread (args->message_data)
 void send_user_input(const char* user_input, char* recipient_id, Receiver *args) 
 {   
     if (!user_input) {
@@ -127,8 +127,8 @@ void send_user_input(const char* user_input, char* recipient_id, Receiver *args)
     pthread_mutex_lock(&args->mutex);
 
     // make sure the memory is free 
-    // free(args->message_data.message_to_send);
-    // free(args->message_data.recipient_id);
+    free(args->message_data.message_to_send);
+    free(args->message_data.recipient_id);
 
     size_t input_len = strlen(user_input);
     args->message_data.message_to_send = malloc(input_len + 1);
@@ -171,12 +171,17 @@ void *receive_messages(void *args_ptr)
             continue;
         }
 
+        printf("there is a reply\n");
+
         zframe_t *sender_id = zmsg_pop(reply);
-        zframe_t *message_content = zmsg_pop(reply);
+        zframe_t *message_content = zmsg_pop(reply);      
 
         if (message_content && sender_id) {
             char *text = zframe_strdup(message_content);
             char *sender = zframe_strdup(sender_id);
+            printf("sender id: %s\n", sender);
+            printf("reply msg content: %s\n", text);
+
             assert(text != NULL);
             assert(sender != NULL);
             char* self_id = zsock_identity(args->dealer);
@@ -189,12 +194,28 @@ void *receive_messages(void *args_ptr)
                 break;
             }
 
-            if (text && sender){                
+            if (text && sender){        
+                printf("there is text + sender, proceed\n");        
                 // only store message + sender_id for later gui purposes when sender isn't yourself
+
+                printf("DEBUG sender (string): %s\n", sender);
+                printf("DEBUG self_id (string): %s\n", self_id);
+
+                for (size_t i = 0; i < strlen(sender); ++i) {
+                    printf("%02x ", (unsigned char)sender[i]);
+                }
+                printf("\n");
+
+                for (size_t i = 0; i < strlen(self_id); ++i) {
+                    printf("%02x ", (unsigned char)self_id[i]);
+                }
+                printf("\n");
                 if (strcmp(sender, self_id) != 0){
                     pthread_mutex_lock(&args->mutex); 
                     args->message_data.sender_id = sender;
                     args->message_data.most_recent_received_message = text;
+                    printf("args->message_data id: %s\n", args->message_data.sender_id);
+                    printf("args->message_data received msg: %s\n", args->message_data.most_recent_received_message);
                 }  
                 pthread_mutex_unlock(&args->mutex);
             }
@@ -202,7 +223,9 @@ void *receive_messages(void *args_ptr)
                 free(text);
                 free(sender);
             } 
-        }  
+        } else {
+            printf("no message_content or sender_id found in received message\n");
+        }
         zframe_destroy(&message_content);
         zframe_destroy(&sender_id);
         // printf("most recently received message: %s\n", args->message_data.most_recent_received_message);
@@ -228,13 +251,19 @@ void *send_messages(void *args_ptr)
 
         zmsg_t *msg = zmsg_new();
 
+        char* recipient_id = args->message_data.recipient_id;
+        assert(recipient_id != NULL);
+
         char* sender_id = zsock_identity(args->dealer);
         assert(sender_id != NULL);
 
-        // the dealer decides the recipient of the msg, recipient is the first frame
-        zframe_t *id = zframe_new(sender_id, strlen(sender_id));
-        zmsg_append(msg, &id);
-        zmsg_addstr(msg, args->message_data.message_to_send);
+        // the dealer decides the recipient of the msg, recipient is the first frame, sender is added automatically no need to add its frame
+        zframe_t *recip_id = zframe_new(recipient_id, strlen(recipient_id));
+        zframe_t *content = zframe_new(args->message_data.message_to_send, strlen(args->message_data.message_to_send));
+        
+        // [recipient][sender][message_content]
+        zmsg_append(msg, &recip_id);
+        zmsg_append(msg, &content);
     
         // send
         zmsg_send(&msg, args->dealer);
@@ -413,6 +442,8 @@ bool check_for_new_message(Receiver *args, ChatHistory *chat_log)
         }
     }
 
+    printf("latest received message: %s\n", latest_received_message);
+
     // probably also not a necessary check
     if (!latest_received_message) {
         pthread_mutex_unlock(&args->mutex);
@@ -517,7 +548,6 @@ void init_raylib(Receiver *args)
         }    
 
         EndMode2D();
-        // DrawText("Client", 0, 0, 60, RED);
 
         get_user_input(&input);       
         erase_user_input(&input);     
@@ -539,7 +569,7 @@ void init_raylib(Receiver *args)
         // broadcast the message to the server
         if (user_input_taken && user_string && !message_sent) {
             message_sent = true;
-            send_user_input(user_string, "user1", args);            
+            send_user_input(user_string, "user2", args);            
         }
         
         // clear message / reset states for next message
@@ -587,7 +617,7 @@ int main(void)
     // connect to server
     printf ("Connecting to server...\n");    
     zsock_t *dealer = zsock_new(ZMQ_DEALER);
-    zsock_set_identity(dealer, "user2");
+    zsock_set_identity(dealer, "user1");
     zsock_connect(dealer, "tcp://localhost:5555");
 
     // with the goal of not blocking the raylib gameloop 
@@ -642,8 +672,7 @@ int main(void)
     pthread_join(send_messages_thread, NULL);
     printf("shutting down send thread...\n");
     pthread_mutex_destroy(&args.mutex);
-    zsock_destroy(&dealer);
-    
+    zsock_destroy(&dealer);    
 
     return 0;
 }
