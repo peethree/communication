@@ -5,6 +5,7 @@
 #include <string.h>
 #include <time.h>
 #include <assert.h>
+#include <pthread.h>
 
 #define NOB_IMPLEMENTATION
 #define NOB_STRIP_PREFIX
@@ -16,14 +17,10 @@
 #undef LOG_WARNING
 #include <raylib.h>
 
-#define MAX_MSG_LEN 512
-#define MAX_ID_LEN 64
-#include <pthread.h>
-
 typedef struct {
     char** items;
-    int capacity;
-    int count;
+    size_t capacity;
+    size_t count;
 } UserInput;
 
 typedef struct {
@@ -36,8 +33,8 @@ typedef struct {
 
 typedef struct {
     Message *items;
-    int capacity;
-    int count;
+    size_t capacity;
+    size_t count;
 } ChatHistory;
 
 typedef struct {
@@ -75,7 +72,7 @@ void draw_user_input(UserInput *input)
     int pos_y = 560;
     int fontsize = 20;
     
-    for (int i = 0; i < input->count; i++) {
+    for (size_t i = 0; i < input->count; i++) {
         // calculate how many characters fit per line
         int chars_per_line = (GetScreenWidth() - fontsize - pos_x) / fontsize;  
         int line = i / chars_per_line;
@@ -101,8 +98,8 @@ void erase_user_input(UserInput *input)
 char* formulate_string_from_user_input(UserInput *input) 
 {    
     // calculate total length of the resulting string
-    int len = 0;
-    for (int i = 0; i < input->count; i++) len += strlen(input->items[i]);    
+    size_t len = 0;
+    for (size_t i = 0; i < input->count; i++) len += strlen(input->items[i]);    
 
     // allocate memory based on total length of the input
     char* str = malloc(len + 1);    
@@ -110,7 +107,7 @@ char* formulate_string_from_user_input(UserInput *input)
     
     // strcat expects str to start with a '\0' else it won't know where to start appending
     str[0] = '\0';
-    for (int i = 0; i < input->count; i++) strcat(str, input->items[i]);
+    for (size_t i = 0; i < input->count; i++) strcat(str, input->items[i]);
 
     return str;
 }
@@ -248,7 +245,7 @@ void *send_messages(void *args_ptr)
 void free_user_input(UserInput *input, char** user_string) 
 {
     if (input) {
-        for (int i = 0; i < input->count; i++) {
+        for (size_t i = 0; i < input->count; i++) {
             if (input->items[i]) {
                 free(input->items[i]);
                 input->items[i] = NULL;
@@ -435,40 +432,41 @@ bool check_for_new_message(Receiver *args, ChatHistory *chat_log)
     return new;    
 }
 
-// TODO: align the user name after the timestamp for consecutive msgs
 // ideally use a font that doesn't have different pixel width per character
 void draw_chat_history(ChatHistory *chat_log)
 {
-    // max time_str buffer is 14 + 1 for '\0'
+    // max required time_str buffer for "%d-%m %H:%M:%S" is 14 + 1 for '\0'
     char time_str[15];
     int fontsize = 20;
     
-    for (int i = 0; i < chat_log->count; i++) {
+    for (size_t i = 0; i < chat_log->count; i++) {
         Message *msg = &chat_log->items[i];        
         strftime(time_str, sizeof(time_str), "%d-%m %H:%M:%S", localtime(&msg->timestamp));
 
         int time_str_width = MeasureText(time_str, fontsize);
         // assumption that 140 is the widest the time_str can be
-        int padding = 140 - time_str_width; 
+        assert(time_str_width < 141);        
+        int padding = 140 - time_str_width;
 
         int timestamp_x = 10;      
         int msg_x = timestamp_x + time_str_width + padding;
+        int y = 0 + (i * 32);
 
-        // prefix with timestamp
         if (msg->received && msg->received_msg) {
-            DrawText(TextFormat("%s %s", time_str, msg->received_msg), 10, 0 + (i * 32), fontsize, WHITE);
+            //prefix with timestamp
+            DrawText(time_str, timestamp_x, y, fontsize, WHITE);
+            DrawText(msg->received_msg, msg_x, y, fontsize, WHITE);
         }
         if (msg->sent && msg->sent_msg) {
-            // DrawText(TextFormat("%s %s", time_str, msg->sent_msg), 10, 0 + (i * 32), fontsize, WHITE);
-            DrawText(time_str, timestamp_x, 0 + (i * 32), fontsize, WHITE);
-            DrawText(msg->sent_msg, msg_x, 0 + (i * 32), fontsize, WHITE);
+            DrawText(time_str, timestamp_x, y, fontsize, WHITE);
+            DrawText(msg->sent_msg, msg_x, y, fontsize, WHITE);
         }
     }
 }
 
 void free_chat_log(ChatHistory *chat_log) 
 {
-    for (int i = 0; i < chat_log->count; i++) {
+    for (size_t i = 0; i < chat_log->count; i++) {
         if (chat_log->items[i].received_msg) {
             free(chat_log->items[i].received_msg);
             chat_log->items[i].received_msg = NULL;
@@ -547,7 +545,7 @@ void init_raylib(Receiver *args)
         // broadcast the message to the server
         if (user_input_taken && user_string && !message_sent) {
             message_sent = true;
-            send_user_input(user_string, "user2", args);            
+            send_user_input(user_string, "user1", args);            
         }
         
         // clear message / reset states for next message
@@ -595,7 +593,7 @@ int main(void)
     // connect to server
     printf ("Connecting to server...\n");    
     zsock_t *dealer = zsock_new(ZMQ_DEALER);
-    zsock_set_identity(dealer, "user1");
+    zsock_set_identity(dealer, "user2");
     zsock_connect(dealer, "tcp://localhost:5555");
 
     // arguments to be passed around where needed
