@@ -73,7 +73,6 @@ void draw_user_input(UserInput *input)
 {
     int pos_x = 10;
     int pos_y = 560;
-
     int fontsize = 20;
     
     for (int i = 0; i < input->count; i++) {
@@ -119,10 +118,6 @@ char* formulate_string_from_user_input(UserInput *input)
 // copy user input into message buffer of the send message thread (args->message_data)
 void send_user_input(const char* user_input, char* recipient_id, Receiver *args) 
 {   
-    if (!user_input) {
-        return;
-    }
-
     // mutex
     pthread_mutex_lock(&args->mutex);
 
@@ -149,13 +144,10 @@ void send_user_input(const char* user_input, char* recipient_id, Receiver *args)
         printf("ERROR: buy more RAM!\n");
         return;
     }
-
     args->is_there_a_msg_to_send = true;
 
     pthread_mutex_unlock(&args->mutex);
 }
-
-
 
 /* 
 this function will run concurrent with the raylib window and the send_messages function
@@ -166,7 +158,8 @@ void *receive_messages(void *args_ptr)
     Receiver *args = (Receiver *)args_ptr;
 
     while (args->running && !zsys_interrupted) { // zsys_interrupted CZMQ: "Global signal indicator, TRUE when user presses Ctrl-C"
-        zmsg_t *reply = zmsg_recv(args->dealer); // this blocks until message is received
+        // this blocks until a message is received
+        zmsg_t *reply = zmsg_recv(args->dealer); 
         if (!reply) {
             continue;
         }
@@ -443,20 +436,32 @@ bool check_for_new_message(Receiver *args, ChatHistory *chat_log)
 }
 
 // TODO: align the user name after the timestamp for consecutive msgs
+// ideally use a font that doesn't have different pixel width per character
 void draw_chat_history(ChatHistory *chat_log)
 {
-    char time_str[32];
+    // max time_str buffer is 14 + 1 for '\0'
+    char time_str[15];
+    int fontsize = 20;
     
     for (int i = 0; i < chat_log->count; i++) {
         Message *msg = &chat_log->items[i];        
         strftime(time_str, sizeof(time_str), "%d-%m %H:%M:%S", localtime(&msg->timestamp));
 
+        int time_str_width = MeasureText(time_str, fontsize);
+        // assumption that 140 is the widest the time_str can be
+        int padding = 140 - time_str_width; 
+
+        int timestamp_x = 10;      
+        int msg_x = timestamp_x + time_str_width + padding;
+
         // prefix with timestamp
         if (msg->received && msg->received_msg) {
-            DrawText(TextFormat("%s %s", time_str, msg->received_msg), 10, 0 + (i * 32), 20, WHITE);
+            DrawText(TextFormat("%s %s", time_str, msg->received_msg), 10, 0 + (i * 32), fontsize, WHITE);
         }
         if (msg->sent && msg->sent_msg) {
-            DrawText(TextFormat("%s %s", time_str, msg->sent_msg), 10, 0 + (i * 32), 20, WHITE);
+            // DrawText(TextFormat("%s %s", time_str, msg->sent_msg), 10, 0 + (i * 32), fontsize, WHITE);
+            DrawText(time_str, timestamp_x, 0 + (i * 32), fontsize, WHITE);
+            DrawText(msg->sent_msg, msg_x, 0 + (i * 32), fontsize, WHITE);
         }
     }
 }
@@ -593,7 +598,7 @@ int main(void)
     zsock_set_identity(dealer, "user1");
     zsock_connect(dealer, "tcp://localhost:5555");
 
-    // with the goal of not blocking the raylib gameloop 
+    // arguments to be passed around where needed
     Receiver args = {
         .message_data = {
             .message_to_send = NULL,
@@ -607,11 +612,12 @@ int main(void)
         .user_input = NULL
     };
 
+    // mutex to prevent race conditions between the threads
     pthread_mutex_init(&args.mutex, NULL);
     pthread_t receive_messages_thread;
     pthread_t send_messages_thread;
 
-    // launch a concurrent threads for the message receiver / sender functions
+    // launch concurrent threads for the message receiver / sender functions
     if (pthread_create(&receive_messages_thread, NULL, receive_messages, &args) != 0) {
         fprintf(stderr, "Failed to create receive messages thread\n");
         zsock_destroy(&dealer);
@@ -628,7 +634,8 @@ int main(void)
         printf("Send messages thread created...\n");
     }
 
-    // start raylib window and pass along the Receiver struct which holds the connected socket (dealer is not thread-safe)
+    // start raylib window and pass along the Receiver struct 
+    // (args.dealer is not thread-safe so mutex is locked when args is being read or written to and unlocked after)
     printf("Initializing raylib...\n");
     init_raylib(&args);
 
@@ -644,7 +651,9 @@ int main(void)
     printf("shutting down receive thread...\n");
     pthread_join(send_messages_thread, NULL);
     printf("shutting down send thread...\n");
+
     pthread_mutex_destroy(&args.mutex);
+
     zsock_destroy(&dealer);    
 
     return 0;
