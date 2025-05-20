@@ -7,7 +7,6 @@
 int main(int argc, char** argv) {       
     NOB_GO_REBUILD_URSELF(argc, argv);
 
-    // build 1: server
     Cmd cmd = {0};
     cmd_append(&cmd, 
         "cc", 
@@ -24,19 +23,20 @@ int main(int argc, char** argv) {
         return 1;
     }  
 
-    // build 2: client
     Cmd cmd2 = {0};
     cmd_append(&cmd2,
         "cc", 
         "dealer.c",             
-        "-I/usr/include",
-        "-lczmq",
-        "-Wall", 
-        "-Wextra", 
-        "-I/usr/local/include",         
+        "-I/usr/include",               //czmq
+        "-lczmq", 
+        "-I/usr/local/include",         // raylib
         "-L/usr/local/lib",         
         "-lraylib", 
         "-lm",
+        "-lssl",                        // ssl
+        "-lcrypto",
+        "-Wall", 
+        "-Wextra",
         "-o", 
         "dealer"                                    
     );      
