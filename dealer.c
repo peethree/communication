@@ -17,6 +17,10 @@
 #undef LOG_WARNING
 #include <raylib.h>
 
+// TODO: encrypt messages
+#include <openssl/evp.h>
+#include <openssl/rand.h>
+
 typedef struct {
     char** items;
     size_t capacity;
@@ -47,6 +51,8 @@ typedef struct {
 typedef struct {
     MessageData message_data;    
     char* user_input;
+    unsigned char* iv;
+    unsigned char* key;
     zsock_t *dealer;    
     pthread_mutex_t mutex;    
     bool running;
@@ -146,6 +152,83 @@ void send_user_input(const char* user_input, char* recipient_id, Receiver *args)
     pthread_mutex_unlock(&args->mutex);
 }
 
+// encrypt plaintext into ciphertext using aes
+void aes_encrypt(unsigned char* key, unsigned char* plaintext, unsigned char* ciphertext, int* ciphertext_len)
+{
+    // create encryption context
+    EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
+    if (!ctx) {
+        fprintf(stderr, "Failed to create a context for encryption.\n");
+        return;
+    }
+
+    // init aes encryption
+    if (EVP_EncryptInit_ex(ctx, EVP_aes_128_cbc(), NULL, key, NULL) != 1) {
+        fprintf(stderr, "Failed to initialize encryption.\n");
+        EVP_CIPHER_CTX_free(ctx);
+        return;
+    }
+
+    // provide plaintext
+    int len;
+    if (EVP_EncryptUpdate(ctx, ciphertext, &len, plaintext, strlen((char *)plaintext)) != 1) {
+        fprintf(stderr, "Failed to encrypt data.\n");
+        EVP_CIPHER_CTX_free(ctx);
+        return;
+    }
+    *ciphertext_len = len;
+
+    // finalize
+    if (EVP_EncryptFinal_ex(ctx, ciphertext + len, &len) != 1) {
+        fprintf(stderr, "Failed to finalize encryption.\n");
+        EVP_CIPHER_CTX_free(ctx);
+        return;
+    }
+    *ciphertext_len += len;
+
+    EVP_CIPHER_CTX_free(ctx);
+}
+
+// decrypt the ciphertext
+void aes_decrypt(unsigned char* key, unsigned char* ciphertext, unsigned char* plaintext, int* ciphertext_len)
+{
+    // create decryption context
+    EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
+    if (!ctx) {
+        fprintf(stderr, "Failed to create context for decryption.\n");
+        return;
+    }
+
+    // init aes decryption
+    if (EVP_DecryptInit_ex(ctx, EVP_aes_128_cbc(), NULL, key, NULL) != 1) {
+        fprintf(stderr, "Failed to initialize decryption.\n");
+        EVP_CIPHER_CTX_free(ctx);
+        return;
+    }
+
+    // provide the ciphertext for decryption
+    int len;
+    if (EVP_DecryptUpdate(ctx, plaintext, &len, ciphertext, *ciphertext_len) != 1) {
+        fprintf(stderr, "Failed to decrypt data.\n");
+        EVP_CIPHER_CTX_free(ctx);
+        return;
+    }
+    // null terminate plaintext
+    plaintext[len] = '\0'; 
+    int plaintext_len = len;
+
+    // finalize decryption
+    if (EVP_DecryptFinal_ex(ctx, plaintext + len, &len) != 1) {
+        fprintf(stderr, "Failed to finalize decryption.\n");
+        EVP_CIPHER_CTX_free(ctx);
+        return;
+    }
+    plaintext_len += len;    
+    plaintext[plaintext_len] = '\0'; 
+
+    EVP_CIPHER_CTX_free(ctx);
+}
+
 /* 
 this function will run concurrent with the raylib window and the send_messages function
 (it follows the required signature for the pthread_create() function in C.) 
@@ -173,6 +256,8 @@ void *receive_messages(void *args_ptr)
 
             char* self_id = zsock_identity(args->dealer);
 
+            // TODO: decrypt the message with aes  
+
             // kill the thread in case of receive thread blocking
             if (strcmp(text, "/shutdown") == 0 && strcmp(sender, self_id)) {
                 // free resources and break loop
@@ -196,7 +281,6 @@ void *receive_messages(void *args_ptr)
         } 
         zframe_destroy(&message_content);
         zframe_destroy(&sender_id);
-        // printf("most recently received message: %s\n", args->message_data.most_recent_received_message);
         zmsg_destroy(&reply); 
     }
     return NULL;
@@ -210,13 +294,16 @@ void *send_messages(void *args_ptr)
         pthread_mutex_lock(&args->mutex);
         bool send = args->is_there_a_msg_to_send;
 
-        // there is no new message to send        
+        // there is no new message to send,     
         if (!send) {   
             pthread_mutex_unlock(&args->mutex);
             usleep(10000);  // 10ms sleep
             continue;
         }
 
+        // TODO: encrypt the message with aes    
+        // plaintext needs to be padded with bytes to fit the aes block size
+    
         zmsg_t *msg = zmsg_new();
 
         char* recipient_id = args->message_data.recipient_id;
@@ -237,7 +324,7 @@ void *send_messages(void *args_ptr)
         zmsg_send(&msg, args->dealer);
         args->is_there_a_msg_to_send = false;
 
-        pthread_mutex_unlock(&args->mutex);
+        pthread_mutex_unlock(&args->mutex);    
     }             
     return NULL;
 }
@@ -367,16 +454,6 @@ void add_sent_message_to_chat_log(Receiver *args, ChatHistory *chat_log)
     }
     msg.sent = true;
     msg.timestamp = current_time;
-
-    // avoid adding the same sent message twice
-    for (int i = chat_log->count - 1; i >= 0; i--) {
-        if (chat_log->items[i].sent && strcmp(chat_log->items[i].sent_msg, msg.sent_msg) == 0) {
-            free(msg.sent_msg);  // avoid memory leak
-            pthread_mutex_unlock(&args->mutex);
-            return;
-        }
-    }
-
     da_append(chat_log, msg);
 
     pthread_mutex_unlock(&args->mutex);
@@ -533,19 +610,17 @@ void init_raylib(Receiver *args)
         // prevent empty messages from being sent
         if (IsKeyPressed(KEY_ENTER) && input.count > 0) {
             user_input_taken = true;
-            // printf("taken user_input\n");
         }       
 
         // only formulate the string once for now
         if (user_input_taken && !user_string) {
             user_string = formulate_string_from_user_input(&input);   
-            // printf("formulating string\n"); 
         }
 
         // broadcast the message to the server
         if (user_input_taken && user_string && !message_sent) {
             message_sent = true;
-            send_user_input(user_string, "user1", args);            
+            send_user_input(user_string, "user2", args);            
         }
         
         // clear message / reset states for next message
@@ -554,25 +629,25 @@ void init_raylib(Receiver *args)
             user_input_taken = false;     
             add_sent_message_to_chat_log(args, &chat_log);         
             free_user_input(&input, &user_string);        
-            // printf("adding sent message to chat log\n");    
         }
         
         // set the message_received flag to true if there is a new message
         if (!new_message_received) {
             new_message_received = check_for_new_message(args, &chat_log);
-            // printf("check for new message\n");
         }
 
         // add new message to chat log
         if (new_message_received) {
             new_message_received = false;
             add_to_chat_log(args, &chat_log);            
-            // printf("adding received message to chatlog\n");
         }        
 
         // TODOS:
         // encrypt / decrypt messages?
         // account creation / database?
+        // emoji support?
+        // file sharing?
+        // account creation?
         EndDrawing();
     }        
     free_chat_log(&chat_log);
@@ -593,8 +668,21 @@ int main(void)
     // connect to server
     printf ("Connecting to server...\n");    
     zsock_t *dealer = zsock_new(ZMQ_DEALER);
-    zsock_set_identity(dealer, "user2");
+    zsock_set_identity(dealer, "user1");
     zsock_connect(dealer, "tcp://localhost:5555");
+
+    // generate aes key
+    unsigned char key[16];
+    if (!RAND_bytes(key, sizeof(key))) {
+        fprintf(stderr, "Encryption key doesn't match aes block size\n");
+    }
+
+    // generate initialization value (to prevent the same block of text to have the same cipher every time)
+    unsigned char iv[16];
+    if (RAND_bytes(iv, sizeof(iv)) != 1) {
+        fprintf(stderr, "Failed to generate random IV.\n");
+        return 1;
+    }
 
     // arguments to be passed around where needed
     Receiver args = {
@@ -604,6 +692,8 @@ int main(void)
             .recipient_id = NULL,
             .sender_id = NULL
         },
+        .key = key,
+        .iv = iv,
         .dealer = dealer,
         .running = true,
         .is_there_a_msg_to_send = false,
