@@ -29,19 +29,18 @@ int main (void)
                 break;
             }
 
-            printf("Received: \n");
+            // printf("Received: \n");
             // pop sender id
             zframe_t *sender_id = zmsg_pop(msg); 
-            printf("sender id: %s\n", zframe_strhex(sender_id));
+            // printf("sender id: %s\n", zframe_strhex(sender_id));
 
             // pop recipient id
             zframe_t *rec_id = zmsg_pop(msg);
-            printf("recipient id: %s\n", zframe_strhex(rec_id));
+            // printf("recipient id: %s\n", zframe_strhex(rec_id));
 
             // pop msg content
             zframe_t *message_data = zmsg_pop(msg);   
-            char* content = zframe_strdup(message_data);
-            printf("content: %s\n", content);          
+            // zframe_print(message_data, "cipher: ");
             
             // reply ... forward to recipient
             zmsg_t *reply = zmsg_new();
@@ -51,7 +50,6 @@ int main (void)
             zmsg_send(&reply, router);
 
             //cleanup
-            free(content);
             zmsg_destroy(&msg);
         }
     }

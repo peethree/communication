@@ -153,8 +153,9 @@ void send_user_input(const char* user_input, char* recipient_id, Receiver *args)
 }
 
 // encrypt plaintext into ciphertext using aes
-void aes_encrypt(unsigned char* key, unsigned char* plaintext, unsigned char* ciphertext, int* ciphertext_len)
+void aes_encrypt(unsigned char* key, unsigned char* iv, unsigned char* plaintext, unsigned char* ciphertext, size_t *ciphertext_len, size_t plaintext_len)
 {
+    // printf("plaintext len: %zu\n", plaintext_len);
     // create encryption context
     EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
     if (!ctx) {
@@ -162,21 +163,30 @@ void aes_encrypt(unsigned char* key, unsigned char* plaintext, unsigned char* ci
         return;
     }
 
+    // turn on byte padding 
+    EVP_CIPHER_CTX_set_padding(ctx, 1);
+
     // init aes encryption
-    if (EVP_EncryptInit_ex(ctx, EVP_aes_128_cbc(), NULL, key, NULL) != 1) {
+    if (EVP_EncryptInit_ex(ctx, EVP_aes_128_cbc(), NULL, key, iv) != 1) {
         fprintf(stderr, "Failed to initialize encryption.\n");
         EVP_CIPHER_CTX_free(ctx);
         return;
     }
-
-    // provide plaintext
-    int len;
-    if (EVP_EncryptUpdate(ctx, ciphertext, &len, plaintext, strlen((char *)plaintext)) != 1) {
+   
+    int len;    
+     // encrypt 16 byte blocks
+    if (EVP_EncryptUpdate(ctx, ciphertext, &len, plaintext, plaintext_len) != 1) {
         fprintf(stderr, "Failed to encrypt data.\n");
         EVP_CIPHER_CTX_free(ctx);
         return;
     }
-    *ciphertext_len = len;
+    int total_len = len; 
+
+    assert(EVP_CIPHER_CTX_get_block_size(ctx) == 16);    
+    // int iv_length = EVP_CIPHER_CTX_get_iv_length(ctx);
+    // printf("iv length: %d\n", iv_length);
+    // int key_length = EVP_CIPHER_CTX_get_key_length(ctx);
+    // printf("key length: %d\n", key_length);
 
     // finalize
     if (EVP_EncryptFinal_ex(ctx, ciphertext + len, &len) != 1) {
@@ -184,38 +194,55 @@ void aes_encrypt(unsigned char* key, unsigned char* plaintext, unsigned char* ci
         EVP_CIPHER_CTX_free(ctx);
         return;
     }
-    *ciphertext_len += len;
+    total_len += len;
+    *ciphertext_len = total_len;
+
+    // printf("Encrypted message length: %zu\n", *ciphertext_len);
 
     EVP_CIPHER_CTX_free(ctx);
 }
 
 // decrypt the ciphertext
-void aes_decrypt(unsigned char* key, unsigned char* ciphertext, unsigned char* plaintext, int* ciphertext_len)
+void aes_decrypt(unsigned char* key, unsigned char* iv, unsigned char* ciphertext, unsigned char* plaintext, size_t ciphertext_len)
 {
+    // printf("Received ciphertext length: %zu\n", ciphertext_len);
+
     // create decryption context
-    EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
+    EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();    
     if (!ctx) {
         fprintf(stderr, "Failed to create context for decryption.\n");
         return;
     }
 
+    // turn on byte padding / should be on by default
+    EVP_CIPHER_CTX_set_padding(ctx, 1);
+
     // init aes decryption
-    if (EVP_DecryptInit_ex(ctx, EVP_aes_128_cbc(), NULL, key, NULL) != 1) {
+    if (EVP_DecryptInit_ex(ctx, EVP_aes_128_cbc(), NULL, key, iv) != 1) {
         fprintf(stderr, "Failed to initialize decryption.\n");
         EVP_CIPHER_CTX_free(ctx);
         return;
     }
 
-    // provide the ciphertext for decryption
+    assert(EVP_CIPHER_CTX_get_block_size(ctx) == 16);
+    // int iv_length = EVP_CIPHER_CTX_get_iv_length(ctx);
+    // printf("iv length: %d\n", iv_length);
+    // int key_length = EVP_CIPHER_CTX_get_key_length(ctx);
+    // printf("key length: %d\n", key_length);
+
+    // printf("decrypt--cipher text len: %zu\n", ciphertext_len);
     int len;
-    if (EVP_DecryptUpdate(ctx, plaintext, &len, ciphertext, *ciphertext_len) != 1) {
+    int plaintext_len;
+    
+    // processes the data in chunks during decryption
+    if (EVP_DecryptUpdate(ctx, plaintext, &len, ciphertext, (int)ciphertext_len) != 1) {
         fprintf(stderr, "Failed to decrypt data.\n");
         EVP_CIPHER_CTX_free(ctx);
         return;
-    }
-    // null terminate plaintext
-    plaintext[len] = '\0'; 
-    int plaintext_len = len;
+    }     
+    plaintext_len = len;
+    // printf("decrypt--cipher text len after update: %d\n", plaintext_len);
+    // printf("decrypted so far: %s\n", plaintext);
 
     // finalize decryption
     if (EVP_DecryptFinal_ex(ctx, plaintext + len, &len) != 1) {
@@ -224,6 +251,7 @@ void aes_decrypt(unsigned char* key, unsigned char* ciphertext, unsigned char* p
         return;
     }
     plaintext_len += len;    
+    // nul terminate plaintext
     plaintext[plaintext_len] = '\0'; 
 
     EVP_CIPHER_CTX_free(ctx);
@@ -248,36 +276,64 @@ void *receive_messages(void *args_ptr)
         zframe_t *message_content = zmsg_pop(reply);      
 
         if (message_content && sender_id) {
-            char *text = zframe_strdup(message_content);
+            // unencrypted str message received
+            // if (zframe_strdup(message_content) != NULL) {
+            //     // kill the thread in case of receive thread blocking
+            //     char *text = zframe_strdup(message_content);
+
+            //     if (strcmp((char *)text, "/shutdown") == 0) {
+            //         // free resources and break loop
+            //         free(text);
+            //         break;
+            //     }
+            // }
+
+            // encrypted message received / zframe_strdup would truncate at \0 byte
+            unsigned char* ciphertext = zframe_data(message_content);
             char *sender = zframe_strdup(sender_id);
 
-            assert(text != NULL);
+            assert(ciphertext != NULL);
             assert(sender != NULL);
 
-            char* self_id = zsock_identity(args->dealer);
+            char* self_id = zsock_identity(args->dealer);     
 
-            // TODO: decrypt the message with aes  
+            if (ciphertext && sender && strcmp(sender, self_id) != 0){        
+                pthread_mutex_lock(&args->mutex); 
 
-            // kill the thread in case of receive thread blocking
-            if (strcmp(text, "/shutdown") == 0 && strcmp(sender, self_id)) {
-                // free resources and break loop
-                free(text);
-                free(sender);
-                break;
-            }
+                size_t ciphertext_len = zframe_size(message_content);
+                // printf("receive message - ciphertext len from zframe_size: %zu\n", ciphertext_len);
 
-            if (text && sender){        
-                if (strcmp(sender, self_id) != 0){
-                    pthread_mutex_lock(&args->mutex); 
-                    args->message_data.sender_id = sender;
-                    args->message_data.most_recent_received_message = text;
-                }  
+                int remainder = ciphertext_len % 16;
+                int padding = 0;
+                if (remainder != 0) {
+                    padding = 16 - remainder;
+                }
+                // printf("receive message - padding: %d\n", padding);
+                int total = ciphertext_len + padding;
+                // printf("ciphertext_len + padding = %d\n", total);
+
+                // allocate memory for the plaintext
+                unsigned char* plaintext = (unsigned char*)malloc(ciphertext_len + padding + 16);
+                if (!plaintext){
+                    printf("ERROR: buy more Ram!\n");
+                    pthread_mutex_unlock(&args->mutex); 
+                    free(sender);
+                    break;
+                }
+
+                // for (size_t i = 0; i < ciphertext_len; ++i) {
+                //     printf("%02x ", ciphertext[i]);
+                // }
+                // printf("\n");
+                        
+                // decrypt the message with aes  
+                aes_decrypt(args->key, args->iv, ciphertext, plaintext, total);
+
+                args->message_data.sender_id = sender;
+                args->message_data.most_recent_received_message = (char *)plaintext;
+
                 pthread_mutex_unlock(&args->mutex);
-            }
-            else {
-                free(text);
-                free(sender);
-            } 
+            }              
         } 
         zframe_destroy(&message_content);
         zframe_destroy(&sender_id);
@@ -301,8 +357,31 @@ void *send_messages(void *args_ptr)
             continue;
         }
 
-        // TODO: encrypt the message with aes    
-        // plaintext needs to be padded with bytes to fit the aes block size
+        // TODO: encrypt the message with aes   
+        size_t plaintext_len = strlen(args->message_data.message_to_send);
+
+        int padding = 0;
+        int remainder = plaintext_len % 16;
+        if (remainder != 0) {
+            padding = 16 - remainder;
+        }
+
+        size_t ciphertext_len = plaintext_len + padding; // aes blocksize = 16
+        // printf("send_messages -- ciphertext_len buffer: %zu\n", ciphertext_len);
+       
+        unsigned char *plaintext = (unsigned char*)args->message_data.message_to_send;
+        unsigned char *ciphertext = (unsigned char *)malloc(ciphertext_len + 16);
+        if (!ciphertext) {
+            printf("ERROR: buy more Ram!\n");
+            free(ciphertext);
+            break;
+        }       
+        aes_encrypt(args->key, args->iv, plaintext, ciphertext, &ciphertext_len, plaintext_len);     
+        
+        // for (size_t i = 0; i < ciphertext_len; ++i) {
+        //     printf("%02x ", ciphertext[i]);
+        // }
+        // printf("\n");   
     
         zmsg_t *msg = zmsg_new();
 
@@ -312,9 +391,15 @@ void *send_messages(void *args_ptr)
         char* sender_id = zsock_identity(args->dealer);
         assert(sender_id != NULL);
 
-        // the dealer decides the recipient of the msg, recipient is the first frame, sender is added automatically no need to add its frame
+        // the dealer decides the recipient of the msg, recipient is the first frame (sender is added automatically no need to add its frame)
+
+        // not encrypted messaging
+        // zframe_t *recip_id = zframe_new(recipient_id, strlen(recipient_id));
+        // zframe_t *content = zframe_new(args->message_data.message_to_send, strlen(args->message_data.message_to_send));
+
+        // encrypted
         zframe_t *recip_id = zframe_new(recipient_id, strlen(recipient_id));
-        zframe_t *content = zframe_new(args->message_data.message_to_send, strlen(args->message_data.message_to_send));
+        zframe_t *content = zframe_new(ciphertext, ciphertext_len);
         
         // [recipient][sender][message_content]
         zmsg_append(msg, &recip_id);
@@ -503,7 +588,7 @@ bool check_for_new_message(Receiver *args, ChatHistory *chat_log)
     // compare the most recent received message with the final entry in chat log
     // if they differ, it's new and should be added to the chat log
     bool new = (strcmp(msg_buffer, latest_received_message) != 0);
-    printf("result of strcmp for new msg check: %d\n", new);
+    // printf("result of strcmp for new msg check: %d\n", new);
 
     pthread_mutex_unlock(&args->mutex);
     return new;    
@@ -522,8 +607,8 @@ void draw_chat_history(ChatHistory *chat_log)
 
         int time_str_width = MeasureText(time_str, fontsize);
         // assumption that 140 is the widest the time_str can be
-        assert(time_str_width < 141);        
-        int padding = 140 - time_str_width;
+        assert(time_str_width < 151);        
+        int padding = 150 - time_str_width;
 
         int timestamp_x = 10;      
         int msg_x = timestamp_x + time_str_width + padding;
@@ -671,18 +756,22 @@ int main(void)
     zsock_set_identity(dealer, "user1");
     zsock_connect(dealer, "tcp://localhost:5555");
 
-    // generate aes key
-    unsigned char key[16];
-    if (!RAND_bytes(key, sizeof(key))) {
-        fprintf(stderr, "Encryption key doesn't match aes block size\n");
-    }
+    // aes key
+    unsigned char key[16] = {
+        0x3f, 0x5a, 0x1c, 0x8e,
+        0x4b, 0x2d, 0x7a, 0x9f,
+        0x6e, 0x0b, 0x3d, 0x8a,
+        0x5c, 0x1f, 0x2e, 0x4a
+    };
 
-    // generate initialization value (to prevent the same block of text to have the same cipher every time)
-    unsigned char iv[16];
-    if (RAND_bytes(iv, sizeof(iv)) != 1) {
-        fprintf(stderr, "Failed to generate random IV.\n");
-        return 1;
-    }
+    // iv key
+    unsigned char iv[16] = {
+        0xa1, 0x2b, 0x3c, 0x4d,
+        0x5e, 0x6f, 0x70, 0x81,
+        0x92, 0x03, 0x14, 0x25,
+        0x36, 0x47, 0x58, 0x69
+    };
+    
 
     // arguments to be passed around where needed
     Receiver args = {
