@@ -51,6 +51,7 @@ typedef struct {
 typedef struct {
     MessageData message_data;    
     char* user_input;
+    char* recipient;
     unsigned char* iv;
     unsigned char* key;
     zsock_t *dealer;    
@@ -705,7 +706,7 @@ void init_raylib(Receiver *args)
         // broadcast the message to the server
         if (user_input_taken && user_string && !message_sent) {
             message_sent = true;
-            send_user_input(user_string, "user2", args);            
+            send_user_input(user_string, args->recipient, args);            
         }
         
         // clear message / reset states for next message
@@ -748,13 +749,30 @@ void init_raylib(Receiver *args)
     CloseWindow();
 }
 
-int main(void)
+int main(int argc, char* argv[])
 {   
+    // make starting 2 clients for testing less tedious
+    if (argc < 3) {
+        printf("Usage: %s current-user name-of-recipient\n", argv[0]);
+        return 1;
+    }
+
+    if (strcmp(argv[1], argv[2]) == 0) {
+        printf("You don't need this program to start a conversation with yourself...\n");
+        printf("Usage: %s current-user name-of-recipient\n", argv[0]);
+        return 1;
+    }
+
+    char* user = argv[1];
+    char* recipient = argv[2];
+
     // connect to server
     printf ("Connecting to server...\n");    
     zsock_t *dealer = zsock_new(ZMQ_DEALER);
-    zsock_set_identity(dealer, "user1");
+    zsock_set_identity(dealer, user);
     zsock_connect(dealer, "tcp://localhost:5555");
+
+    printf("Logged in as %s\n, communicating with %s\n", user, recipient);
 
     // aes key
     unsigned char key[16] = {
@@ -770,8 +788,7 @@ int main(void)
         0x5e, 0x6f, 0x70, 0x81,
         0x92, 0x03, 0x14, 0x25,
         0x36, 0x47, 0x58, 0x69
-    };
-    
+    };    
 
     // arguments to be passed around where needed
     Receiver args = {
@@ -786,7 +803,8 @@ int main(void)
         .dealer = dealer,
         .running = true,
         .is_there_a_msg_to_send = false,
-        .user_input = NULL
+        .user_input = NULL,
+        .recipient = recipient
     };
 
     // mutex to prevent race conditions between the threads
