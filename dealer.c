@@ -17,7 +17,7 @@
 #undef LOG_WARNING
 #include <raylib.h>
 
-// TODO: encrypt messages
+// encryption
 #include <openssl/evp.h>
 #include <openssl/rand.h>
 
@@ -88,7 +88,7 @@ void draw_user_input(UserInput *input)
         int line_position = i % chars_per_line;                
         int current_x = pos_x + (line_position * fontsize);
         int current_y = pos_y + (line * 25);
-        
+
         if (input->items[i]) DrawText(input->items[i], current_x, current_y, fontsize, RED);
     }
 }
@@ -595,25 +595,28 @@ bool check_for_new_message(Receiver *args, ChatHistory *chat_log)
     return new;    
 }
 
-// ideally use a font that doesn't have different pixel width per character
+// TODO: add text wrapping somehow
+// use raylib’s MeasureText() for measuring pixel width.
+// split the string on spaces/newlines, 
+// build lines incrementally.
 void draw_chat_history(ChatHistory *chat_log)
 {
     // max required time_str buffer for "%d-%m %H:%M:%S" is 14 + 1 for '\0'
     char time_str[15];
-    int fontsize = 20;
+    int fontsize = 20;   
     
     for (size_t i = 0; i < chat_log->count; i++) {
         Message *msg = &chat_log->items[i];        
         strftime(time_str, sizeof(time_str), "%d-%m %H:%M:%S", localtime(&msg->timestamp));
 
         int time_str_width = MeasureText(time_str, fontsize);
-        // assumption that 140 is the widest the time_str can be
+        // assumption that 150 is the widest the time_str can be
         assert(time_str_width < 151);        
         int padding = 150 - time_str_width;
 
         int timestamp_x = 10;      
-        int msg_x = timestamp_x + time_str_width + padding;
-        int y = 0 + (i * 32);
+        int msg_x = timestamp_x + time_str_width + padding;   
+        int y = 0 + (i * 32);     
 
         if (msg->received && msg->received_msg) {
             //prefix with timestamp
@@ -749,17 +752,20 @@ void init_raylib(Receiver *args)
     CloseWindow();
 }
 
+// TODO: figure out how to get an AES key to both parties safely.
+// figure out a way to pick a recipient through a GUI
+// implement raygui for gui building?
 int main(int argc, char* argv[])
 {   
-    // make starting 2 clients for testing less tedious
+    // get current user and recipient 
     if (argc < 3) {
-        printf("Usage: %s current-user name-of-recipient\n", argv[0]);
+        printf("Usage: %s username conversation-partner\n", argv[0]);
         return 1;
     }
 
     if (strcmp(argv[1], argv[2]) == 0) {
         printf("You don't need this program to start a conversation with yourself...\n");
-        printf("Usage: %s current-user name-of-recipient\n", argv[0]);
+        printf("Usage: %s username conversation-partner\n", argv[0]);
         return 1;
     }
 
@@ -772,7 +778,7 @@ int main(int argc, char* argv[])
     zsock_set_identity(dealer, user);
     zsock_connect(dealer, "tcp://localhost:5555");
 
-    printf("Logged in as %s\n, communicating with %s\n", user, recipient);
+    printf("Logged in as: %s...\nAttempting to communicate with: %s...\n", user, recipient);
 
     // aes key
     unsigned char key[16] = {
