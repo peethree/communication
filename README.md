@@ -17,4 +17,4 @@ The binaries are built using [nob](https://github.com/tsoding/nob.h). Instead of
 3. nob.h
 4. openssl/evp & openssl/rand
 
-TODO: make it (more) cross platform, currently the binaries are dynamically linked on a linux machine. 
+TODO: make it (more) cross platform, currently the binaries are dynamically linked and built on a linux machine. 
