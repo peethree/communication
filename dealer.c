@@ -258,6 +258,15 @@ void aes_decrypt(unsigned char* key, unsigned char* iv, unsigned char* ciphertex
     EVP_CIPHER_CTX_free(ctx);
 }
 
+size_t calculate_padding(size_t text_len)
+{   
+    size_t remainder = text_len % 16;
+    size_t padding = 0;
+    if (remainder != 0) padding = 16 - remainder;
+
+    return padding;
+}
+
 /* 
 this function will run concurrent with the raylib window and the send_messages function
 (it follows the required signature for the pthread_create() function in C.) 
@@ -302,30 +311,19 @@ void *receive_messages(void *args_ptr)
                 pthread_mutex_lock(&args->mutex); 
 
                 size_t ciphertext_len = zframe_size(message_content);
-                // printf("receive message - ciphertext len from zframe_size: %zu\n", ciphertext_len);
 
-                int remainder = ciphertext_len % 16;
-                int padding = 0;
-                if (remainder != 0) {
-                    padding = 16 - remainder;
-                }
-                // printf("receive message - padding: %d\n", padding);
-                int total = ciphertext_len + padding;
-                // printf("ciphertext_len + padding = %d\n", total);
+                // the evp encryption already does the padding for you, but just in case add it manually           
+                size_t padding = calculate_padding(ciphertext_len);
+                size_t total = ciphertext_len + padding;
 
-                // allocate memory for the plaintext
-                unsigned char* plaintext = (unsigned char*)malloc(ciphertext_len + padding + 16);
+                // allocate memory for the plaintext + a bonus 16
+                unsigned char* plaintext = (unsigned char*)malloc(total + 16);
                 if (!plaintext){
                     printf("ERROR: buy more Ram!\n");
                     pthread_mutex_unlock(&args->mutex); 
                     free(sender);
                     break;
                 }
-
-                // for (size_t i = 0; i < ciphertext_len; ++i) {
-                //     printf("%02x ", ciphertext[i]);
-                // }
-                // printf("\n");
                         
                 // decrypt the message with aes  
                 aes_decrypt(args->key, args->iv, ciphertext, plaintext, total);
@@ -354,21 +352,13 @@ void *send_messages(void *args_ptr)
         // there is no new message to send,     
         if (!send) {   
             pthread_mutex_unlock(&args->mutex);
-            usleep(10000);  // 10ms sleep
+            usleep(10000);  // 10ms sleep -- TODO: can this be increased ? maybe set it to time it takes to render 1 frame
             continue;
         }
 
-        // TODO: encrypt the message with aes   
         size_t plaintext_len = strlen(args->message_data.message_to_send);
-
-        int padding = 0;
-        int remainder = plaintext_len % 16;
-        if (remainder != 0) {
-            padding = 16 - remainder;
-        }
-
-        size_t ciphertext_len = plaintext_len + padding; // aes blocksize = 16
-        // printf("send_messages -- ciphertext_len buffer: %zu\n", ciphertext_len);
+        size_t padding = calculate_padding(plaintext_len);  
+        size_t ciphertext_len = plaintext_len + padding; 
        
         unsigned char *plaintext = (unsigned char*)args->message_data.message_to_send;
         unsigned char *ciphertext = (unsigned char *)malloc(ciphertext_len + 16);
@@ -377,13 +367,8 @@ void *send_messages(void *args_ptr)
             free(ciphertext);
             break;
         }       
-        aes_encrypt(args->key, args->iv, plaintext, ciphertext, &ciphertext_len, plaintext_len);     
-        
-        // for (size_t i = 0; i < ciphertext_len; ++i) {
-        //     printf("%02x ", ciphertext[i]);
-        // }
-        // printf("\n");   
-    
+        aes_encrypt(args->key, args->iv, plaintext, ciphertext, &ciphertext_len, plaintext_len);    
+
         zmsg_t *msg = zmsg_new();
 
         char* recipient_id = args->message_data.recipient_id;
@@ -392,9 +377,7 @@ void *send_messages(void *args_ptr)
         char* sender_id = zsock_identity(args->dealer);
         assert(sender_id != NULL);
 
-        // the dealer decides the recipient of the msg, recipient is the first frame (sender is added automatically no need to add its frame)
-
-        // not encrypted messaging
+        // not encrypted 
         // zframe_t *recip_id = zframe_new(recipient_id, strlen(recipient_id));
         // zframe_t *content = zframe_new(args->message_data.message_to_send, strlen(args->message_data.message_to_send));
 
@@ -402,7 +385,7 @@ void *send_messages(void *args_ptr)
         zframe_t *recip_id = zframe_new(recipient_id, strlen(recipient_id));
         zframe_t *content = zframe_new(ciphertext, ciphertext_len);
         
-        // [recipient][sender][message_content]
+        // [recipient][message_content]
         zmsg_append(msg, &recip_id);
         zmsg_append(msg, &content);
     
@@ -477,7 +460,6 @@ void add_to_chat_log(Receiver *args, ChatHistory *chat_log)
     // prefixing the message with a log "[user1]: bla-bla-bla"
     size_t format_buffer = 5 + strlen(sender) + strlen(inc_msg); // 5: '[]: + " " + null terminator'
     char msg_buffer[format_buffer];
-
     snprintf(msg_buffer, sizeof(msg_buffer), "[%s]: %s", sender, inc_msg);
 
     // if chat_log is not empty, check the last received message
@@ -500,7 +482,6 @@ void add_to_chat_log(Receiver *args, ChatHistory *chat_log)
     }
     msg.received = true;
     msg.timestamp = current_time;
-
     da_append(chat_log, msg);
 
     pthread_mutex_unlock(&args->mutex);
@@ -521,7 +502,6 @@ void add_sent_message_to_chat_log(Receiver *args, ChatHistory *chat_log)
     time_t current_time;   
     time(&current_time);      
 
-    // TODO: zsock_identity might not be the right approach
     char *sender = zsock_identity(args->dealer);
     assert(sender != NULL);
 
@@ -578,8 +558,8 @@ bool check_for_new_message(Receiver *args, ChatHistory *chat_log)
 
     // format for comparison
     char *sender = args->message_data.sender_id;
-    char *inc_msg = args->message_data.most_recent_received_message;
     assert(sender != NULL);
+    char *inc_msg = args->message_data.most_recent_received_message;   
     assert(inc_msg != NULL);
 
     size_t format_buffer = 5 + strlen(sender) + strlen(inc_msg); // 5: '[]: + " " + null terminator'
@@ -603,7 +583,8 @@ void draw_chat_history(ChatHistory *chat_log)
 {
     // max required time_str buffer for "%d-%m %H:%M:%S" is 14 + 1 for '\0'
     char time_str[15];
-    int fontsize = 20;   
+    int fontsize = 20; 
+    int timestamp_x = 10;   
     
     for (size_t i = 0; i < chat_log->count; i++) {
         Message *msg = &chat_log->items[i];        
@@ -613,8 +594,7 @@ void draw_chat_history(ChatHistory *chat_log)
         // assumption that 150 is the widest the time_str can be
         assert(time_str_width < 151);        
         int padding = 150 - time_str_width;
-
-        int timestamp_x = 10;      
+             
         int msg_x = timestamp_x + time_str_width + padding;   
         int y = 0 + (i * 32);     
 
@@ -623,6 +603,7 @@ void draw_chat_history(ChatHistory *chat_log)
             DrawText(time_str, timestamp_x, y, fontsize, WHITE);
             DrawText(msg->received_msg, msg_x, y, fontsize, WHITE);
         }
+
         if (msg->sent && msg->sent_msg) {
             DrawText(time_str, timestamp_x, y, fontsize, WHITE);
             DrawText(msg->sent_msg, msg_x, y, fontsize, WHITE);
@@ -701,18 +682,18 @@ void init_raylib(Receiver *args)
             user_input_taken = true;
         }       
 
-        // only formulate the string once for now
+        // formulate the string 
         if (user_input_taken && !user_string) {
             user_string = formulate_string_from_user_input(&input);   
         }
 
-        // broadcast the message to the server
+        // copy over user input to Receiver struct -- send_message thread will send messages based on send flag being set to true
         if (user_input_taken && user_string && !message_sent) {
             message_sent = true;
             send_user_input(user_string, args->recipient, args);            
         }
         
-        // clear message / reset states for next message
+        // clear message / reset states for next message / add sent message to chat log
         if (message_sent) {   
             message_sent = false;
             user_input_taken = false;     

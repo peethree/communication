@@ -32,7 +32,7 @@ int main()
 
     // blocking
     while (!zsys_interrupted) {
-        zmsg_t *msg = zmsg_recv(router);  // This blocks until a message arrives or interrupted
+        zmsg_t *msg = zmsg_recv(router);  
         if (!msg) {
             printf("Interrupted or error receiving message\n");
             break;
