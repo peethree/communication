@@ -4,6 +4,14 @@
 #include <string.h>
 #include <assert.h>
 
+// TODO: add curvezmq authentication
+// both the router and dealer need a set of public and secret keys
+
+// ROUTER:	server identity; stays constant.
+// DEALER:	ephemeral or long-term identity.
+
+// dealers use the router's public key to authenticate it
+// router uses the dealer's public kye to authorize or deny access
 
 // kill router: ps aux | grep router ----- kill -9 with associated ./router pid
 int main()
@@ -12,7 +20,7 @@ int main()
     int rc = zsock_bind(router, "tcp://*:5555");
     assert (rc != -1);
 
-    printf("router started successfully...\n");    
+    printf("router started successfully...\n");        
 
     // non-blocking:
     // zpoller_t *poller = zpoller_new(router, NULL);

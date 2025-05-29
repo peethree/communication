@@ -93,6 +93,25 @@ void draw_user_input(UserInput *input)
     }
 }
 
+// drawing helper function for hiding the user's pw input
+void draw_user_input_hidden(UserInput *input){
+
+    int pos_x = 10;
+    int pos_y = 560;
+    int fontsize = 20;
+    
+    for (size_t i = 0; i < input->count; i++) {
+        int chars_per_line = (GetScreenWidth() - fontsize - pos_x) / fontsize;  
+        int line = i / chars_per_line;
+        
+        int line_position = i % chars_per_line;                
+        int current_x = pos_x + (line_position * fontsize);
+        int current_y = pos_y + (line * 25);
+
+        if (input->items[i]) DrawText("*", current_x, current_y, fontsize, RED);
+    }
+}
+
 // TODO: while holding down backspace, gradually decrement count. a while loop in combination with
 // iskeydown causes issues and the process needs to be manually killed
 void erase_user_input(UserInput *input)
@@ -638,13 +657,30 @@ void mousewheel_scroll(Camera2D *camera)
     }
 }
 
+// compare password hash with db password hash from char* username
+int authenticate_user(char* username, char* password)
+{
+    //
+}   
+
 void init_raylib(Receiver *args)
 {
     InitWindow(800, 600, "client");
     SetTargetFPS(24);
 
-    UserInput input = {0};
+    bool authenticated = false;
+    
+    UserInput username = {0};
+    char* username_string = NULL;
+    bool username_submitted = false;
+    bool username_printed = false;
+    
+    UserInput password = {0};
+    char* password_string = NULL;
+    bool password_submitted = false;
+    bool password_printed = false;
 
+    UserInput input = {0};
     char* user_string = NULL;    
     bool user_input_taken = false;
     bool message_sent = false;
@@ -661,65 +697,133 @@ void init_raylib(Receiver *args)
     {
         BeginDrawing();
 
-        ClearBackground(BLACK);
+        // TODO: do some user authentication
+        if (!authenticated){            
+            ClearBackground(BLACK);
 
-        BeginMode2D(camera);
+            // get the user to input his username and password (or register an account?)
+            // first username, then press enter or backspace, then password followed by backspace or enter for submission    
+            if (!username_submitted) {
+                DrawText("USERNAME: ", 10, 0, 50, WHITE);    
+                get_user_input(&username);
+                erase_user_input(&username);
+                draw_user_input(&username);
+            }
 
-        // draw inside raylib window if chat log is populated
-        if (chat_log.count > 0) {
-            draw_chat_history(&chat_log);
-        }    
+            // prevent empty username from being used
+            if (IsKeyPressed(KEY_ENTER) && username.count > 0) {
+                username_submitted = true;
+            }       
 
-        EndMode2D();
+            // formulate the username string 
+            if (username_submitted && !username_string) {
+                username_string = formulate_string_from_user_input(&username);   
+            }            
 
-        get_user_input(&input);       
-        erase_user_input(&input);     
-        mousewheel_scroll(&camera);
-        draw_user_input(&input);  
+            if (username_submitted && username_string && !username_printed){
+                username_printed = true;
+                printf("username_string: %s\n", username_string);
 
-        // prevent empty messages from being sent
-        if (IsKeyPressed(KEY_ENTER) && input.count > 0) {
-            user_input_taken = true;
-        }       
+                // free and clear the input
+                free_user_input(&username, &username_string);
+            }
 
-        // formulate the string 
-        if (user_input_taken && !user_string) {
-            user_string = formulate_string_from_user_input(&input);   
+            if (username_submitted && !password_submitted){
+                DrawText("Password: ", 10, 0, 50, WHITE);
+                get_user_input(&password);       
+                erase_user_input(&password);
+                draw_user_input_hidden(&password);
+            }
+
+            // prevent empty password from being used
+            if (IsKeyPressed(KEY_ENTER) && password.count > 0) {
+                password_submitted = true;
+            }       
+
+            // formulate the username string 
+            if (password_submitted && !password_string) {
+                password_string = formulate_string_from_user_input(&password);   
+            }   
+
+            // TDOO: check if the username exists before checking the password
+
+            // hash password
+            if (password_submitted && password_string && !password_printed){
+                password_printed = true;
+                printf("password_string: %s\n", password_string);
+                free_user_input(&password, &password_string);
+            }
+
+            // if (authenticate_user(username_string, password_string) == 0) {
+            //     authenticated = true;
+            // }
+
+            if (password_printed){
+                authenticated = true;
+            }
         }
 
-        // copy over user input to Receiver struct -- send_message thread will send messages based on send flag being set to true
-        if (user_input_taken && user_string && !message_sent) {
-            message_sent = true;
-            send_user_input(user_string, args->recipient, args);            
-        }
-        
-        // clear message / reset states for next message / add sent message to chat log
-        if (message_sent) {   
-            message_sent = false;
-            user_input_taken = false;     
-            add_sent_message_to_chat_log(args, &chat_log);         
-            free_user_input(&input, &user_string);        
-        }
-        
-        // set the message_received flag to true if there is a new message
-        if (!new_message_received) {
-            new_message_received = check_for_new_message(args, &chat_log);
-        }
+        if (authenticated){
+            ClearBackground(BLACK);
 
-        // add new message to chat log
-        if (new_message_received) {
-            new_message_received = false;
-            add_to_chat_log(args, &chat_log);            
-        }        
+            BeginMode2D(camera);
+
+            // draw inside raylib window if chat log is populated
+            if (chat_log.count > 0) {
+                draw_chat_history(&chat_log);
+            }    
+
+            EndMode2D();
+
+            get_user_input(&input);       
+            erase_user_input(&input);     
+            mousewheel_scroll(&camera);
+            draw_user_input(&input);  
+
+            // prevent empty messages from being sent
+            if (IsKeyPressed(KEY_ENTER) && input.count > 0) {
+                user_input_taken = true;
+            }       
+
+            // formulate the string 
+            if (user_input_taken && !user_string) {
+                user_string = formulate_string_from_user_input(&input);   
+            }
+
+            // copy over user input to Receiver struct -- send_message thread will send messages based on send flag being set to true
+            if (user_input_taken && user_string && !message_sent) {
+                message_sent = true;
+                send_user_input(user_string, args->recipient, args);            
+            }
+            
+            // clear message / reset states for next message / add sent message to chat log
+            if (message_sent) {   
+                message_sent = false;
+                user_input_taken = false;     
+                add_sent_message_to_chat_log(args, &chat_log);         
+                free_user_input(&input, &user_string);        
+            }
+            
+            // set the message_received flag to true if there is a new message
+            if (!new_message_received) {
+                new_message_received = check_for_new_message(args, &chat_log);
+            }
+
+            // add new message to chat log
+            if (new_message_received) {
+                new_message_received = false;
+                add_to_chat_log(args, &chat_log);            
+            }     
+        }   
 
         // TODOS:
-        // encrypt / decrypt messages?
         // account creation / database?
         // emoji support?
         // file sharing?
         // account creation?
         EndDrawing();
     }        
+
     free_chat_log(&chat_log);
     args->running = false;
 
@@ -736,6 +840,9 @@ void init_raylib(Receiver *args)
 // TODO: figure out how to get an AES key to both parties safely.
 // figure out a way to pick a recipient through a GUI
 // implement raygui for gui building?
+// add dealer authentication
+// create users / auth users
+// have a flag in raylib for auth and not auth
 int main(int argc, char* argv[])
 {   
     // get current user and recipient 
