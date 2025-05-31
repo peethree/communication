@@ -15,95 +15,66 @@
 // dealers use the router's public key to authenticate it
 // router uses the dealer's public kye to authorize or deny access
 
+
 zcertstore_t *load_certs(char* directory) 
 {
-    zcertstore_t *new = zcertstore_new(directory);
-    DIR *dir = opendir(directory);
-    struct dirent *entry;
-
-    if (!dir){
-        printf("Directory not found\n");
+    zcertstore_t *certstore = zcertstore_new(directory);
+    if (!certstore) {
+        fprintf(stderr, "Failed to create certificate store\n");
         return NULL;
-    }
-
-    while ((entry = readdir(dir)) != NULL) {
-        // skip current and parent directory
-        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
-            continue;
-        }
-
-        // construct full path to the certificate file
-        size_t filepath_buffer = strlen(directory) + strlen(entry->d_name) + 2; // +2 '\0' and "/"
-        char *filepath = malloc(filepath_buffer); 
-        if (!filepath) {
-            printf("Buy more ram!\n");
-            return NULL;
-        } else {
-            snprintf(filepath, filepath_buffer, "%s/%s", directory, entry->d_name);
-
-            // load cert and add it to the store
-            zcert_t *cert = zcert_load(filepath);
-            if (cert) {
-                zcertstore_insert(new, &cert);
-            } else {
-                printf("Failed to load certificate: %s\n", filepath);
-            }            
-        }  
-        free(filepath);
-    }
-
-    closedir(dir);
-    return new;
+    }    
+    return certstore;
 }
 
 // kill router if perpetually blocked: ps aux | grep router ----- kill -9 with associated ./router pid
-int main(void)
+int main()
 {
     // load certs from certificate directory
-    zcertstore_t *certstore = load_certs("keys"); 
-    if (!certstore){
-        printf("No certificates loaded\n");
-        return -1;
-    }
+    // char* directory = "keys";
+    // zcertstore_t *certstore = load_certs(directory); 
+    // if (!certstore){
+    //     printf("No certificates loaded\n");
+    //     return -1;
+    // }
 
-    zcertstore_print(certstore);
+    // zcertstore_print(certstore);
 
-    // load router certificate and apply it to the socket
-    zcert_t *router_cert = zcert_load("router.cert");
-    if (!router_cert){
-        printf("Router certificate not found\n");
-        return 1;
-    }
+    // look up router public key and apply its certificate to the socket
+    // char* router_pub_key = "A9Iz>yq^pr*w=I1.vTE)NDguZ0[#>GXl-hZ=B>&0";
+    // zcert_t *router_cert = zcertstore_lookup(certstore, router_pub_key);
+    // if (!router_cert) {
+    //     printf("Certificate does not match the store lookup\n");
+    //     return -1;
+    // }
+
     zsock_t *router = zsock_new(ZMQ_ROUTER);
     if (!router){
         printf("Failed to create router socket\n");
-        zcert_destroy(&router_cert);
         return 2;
     }
     
-    zcert_apply(router_cert, router);
+    // zcert_apply(router_cert, router);
+    // printf("applied cert to router\n");
 
-    // set to act as CURVE server
-    zsock_set_curve_server(router, true);
-
+    // // set to act as CURVE server
+    // zsock_set_curve_server(router, true);
+    // printf("set curve server\n");
+    
     // zauth actor instance
-    zactor_t *auth = zactor_new(zauth, router_cert);
-    if (!auth){
-        printf("Unable to create authentication actor\n");
-        zsock_destroy(&router);
-        zcert_destroy(&router_cert);
-        return 3;
-    }
+    // zactor_t *auth = zactor_new(zauth, router_cert);
+    // if (!auth){
+    //     printf("Unable to create authentication actor\n");
+    //     zsock_destroy(&router);
+    //     zcert_destroy(&router_cert);
+    //     return 3;
+    // }
+
+    // // configure authentication to use CURVE
+    // zstr_sendx(auth, "CURVE", directory, NULL);
+    // zsock_wait(auth);
 
     int rc = zsock_bind(router, "tcp://*:5555");
     assert (rc != -1);
-    if (rc != 0) {
-        printf("Unable to bind to socket\n");
-        zactor_destroy(&auth);
-        zsock_destroy(&router);
-        zcert_destroy(&router_cert);
-        return 4;
-    }
 
     printf("router started successfully...\n");        
 
@@ -159,9 +130,10 @@ int main(void)
         zmsg_destroy(&msg);
     }
     // zpoller_destroy(&poller);
-    zactor_destroy(&auth);
+    // zactor_destroy(&auth);
     zsock_destroy(&router);
-    zcert_destroy(&router_cert);
+    // zcert_destroy(&router_cert);
+    // zcertstore_destroy(&certstore);
 
     return 0;
 }
