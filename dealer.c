@@ -658,10 +658,10 @@ void mousewheel_scroll(Camera2D *camera)
 }
 
 // compare password hash with db password hash from char* username
-int authenticate_user(char* username, char* password)
-{
-    //
-}   
+// int authenticate_user(char* username, char* password)
+// {
+//     //
+// }   
 
 void init_raylib(Receiver *args)
 {
@@ -696,15 +696,15 @@ void init_raylib(Receiver *args)
     while (!WindowShouldClose())
     {
         BeginDrawing();
+        ClearBackground(BLACK);
 
         // TODO: do some user authentication
-        if (!authenticated){            
-            ClearBackground(BLACK);
-
+        if (!authenticated){    
             // get the user to input his username and password (or register an account?)
             // first username, then press enter or backspace, then password followed by backspace or enter for submission    
             if (!username_submitted) {
-                DrawText("USERNAME: ", 10, 0, 50, WHITE);    
+                DrawText("USERNAME: ", 10, 0, 50, WHITE);   
+
                 get_user_input(&username);
                 erase_user_input(&username);
                 draw_user_input(&username);
@@ -730,6 +730,7 @@ void init_raylib(Receiver *args)
 
             if (username_submitted && !password_submitted){
                 DrawText("Password: ", 10, 0, 50, WHITE);
+
                 get_user_input(&password);       
                 erase_user_input(&password);
                 draw_user_input_hidden(&password);
@@ -764,8 +765,6 @@ void init_raylib(Receiver *args)
         }
 
         if (authenticated){
-            ClearBackground(BLACK);
-
             BeginMode2D(camera);
 
             // draw inside raylib window if chat log is populated
@@ -816,11 +815,6 @@ void init_raylib(Receiver *args)
             }     
         }   
 
-        // TODOS:
-        // account creation / database?
-        // emoji support?
-        // file sharing?
-        // account creation?
         EndDrawing();
     }        
 
@@ -842,7 +836,40 @@ void init_raylib(Receiver *args)
 // implement raygui for gui building?
 // add dealer authentication
 // create users / auth users
-// have a flag in raylib for auth and not auth
+// change usage to use username instead of cl arg   
+// account creation / database?
+// emoji support?
+// file sharing?
+// gui needs a lot of tweaks obviously -- logout button
+
+/* 
+PGP
+
+the router will need to support dynamic user registration
+
+Limit account registration somehow, rate limiting?
+
+Upon user registering / logging in for the first time: generate rsa keys / certificate?
+inside dealer.c after logging in check if the current (unique) user already has a curve certificate, otherwise make one
+
+file based key management pattern
+public keys (*.cert)
+private keys (*.key) <- encrypt this?
+
+Use CURVE to get the recipient's public rsa key safely in the sender's possession
+
+sender:
+generate random AES key (session key): 
+encrypt the message with the session key
+encrypt the aes session key with the recipient's public (PGP) key (RSA or ECC assymmetric encryption)
+message form can be: [Encrypted session key][AES-encrypted message][Metadata, algorithm info, etc.]
+send
+
+recipient:
+use recipient's private key to decrypt the aes session key
+use the session key to decrypt the message
+*/
+
 int main(int argc, char* argv[])
 {   
     // get current user and recipient 
