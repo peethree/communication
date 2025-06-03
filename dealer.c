@@ -49,12 +49,14 @@ typedef struct {
 } MessageData;
 
 typedef struct {
-    MessageData message_data;    
+    MessageData message_data;   
+    char* user_name; 
     char* user_input;
     char* recipient;
     unsigned char* iv;
     unsigned char* key;
     zsock_t *dealer;    
+    zcert_t *user_cerfificate;
     pthread_mutex_t mutex;    
     bool running;
     bool is_there_a_msg_to_send;
@@ -417,6 +419,63 @@ void *send_messages(void *args_ptr)
     return NULL;
 }
 
+
+
+zcert_t *get_user_certificate(char* username)
+{
+    // current user certificate       
+    size_t user_cert_buffer = strlen(username) + 11; // formatted text + '\0'
+    char* user_certificate_location = malloc(user_cert_buffer);
+    snprintf(user_certificate_location, user_cert_buffer, "keys/%s.cert", username);
+    // printf("location to load: %s\n", user_certificate_location);
+    zcert_t *dealer_cert = zcert_load(user_certificate_location);
+
+    return dealer_cert;
+}
+
+void *process_user_input(void *args_ptr)
+{
+    Receiver *args = (Receiver *)args_ptr;
+    
+    while (!args->running && !zsys_interrupted){
+        pthread_mutex_lock(&args->mutex);
+
+        // get the username from args
+        if (args->user_name && !args->running){
+            zsock_set_identity(args->dealer, args->user_name);
+            printf("Connecting to server...\n");
+            int rc = zsock_connect(args->dealer, "tcp://localhost:5555");  
+            assert(rc == 0); 
+            printf("Connected to server...\n");
+
+            // get the user's certificate
+            args->user_cerfificate = get_user_certificate(args->user_name);
+            if (!args->user_cerfificate) {
+                printf("User does not have a certificate\n");
+                pthread_mutex_unlock(&args->mutex);
+                return NULL;
+            }
+            // zcert_print(args->user_cerfificate);
+
+            // server certificate
+            const char* server_cert_location = "keys/router.cert";
+            zcert_t *server_cert = zcert_load(server_cert_location);
+            if (!server_cert) {
+                printf("Unable to load the router's certificate\n");
+                pthread_mutex_unlock(&args->mutex);
+                return NULL;
+            }
+            // zcert_print(server_cert);
+
+            // TODO: finish setting up curve server on dealer side
+                     
+            args->running = true;        
+        }        
+        pthread_mutex_unlock(&args->mutex);
+    }
+    return NULL;
+}
+
 void free_user_input(UserInput *input, char** user_string) 
 {
     if (input) {
@@ -717,15 +776,16 @@ void init_raylib(Receiver *args)
 
             // formulate the username string 
             if (username_submitted && !username_string) {
-                username_string = formulate_string_from_user_input(&username);   
+                username_string = formulate_string_from_user_input(&username); 
+
+                pthread_mutex_lock(&args->mutex);
+                args->user_name = username_string;
+                pthread_mutex_unlock(&args->mutex);
             }            
 
             if (username_submitted && username_string && !username_printed){
                 username_printed = true;
                 printf("username_string: %s\n", username_string);
-
-                // free and clear the input
-                free_user_input(&username, &username_string);
             }
 
             if (username_submitted && !password_submitted){
@@ -817,9 +877,7 @@ void init_raylib(Receiver *args)
 
         EndDrawing();
     }        
-
-    free_chat_log(&chat_log);
-    args->running = false;
+    free_chat_log(&chat_log);    
 
     // dummy message to kill off the blocking receive thread
     zmsg_t *shutdown_msg = zmsg_new();
@@ -827,6 +885,11 @@ void init_raylib(Receiver *args)
     zmsg_addstr(shutdown_msg, self_id);         
     zmsg_addstr(shutdown_msg, "/shutdown");      
     zmsg_send(&shutdown_msg, args->dealer);
+
+    free(self_id);
+    free_user_input(&username, &username_string);
+
+    args->running = false;
 
     CloseWindow();
 }
@@ -873,40 +936,24 @@ use the session key to decrypt the message
 int main(int argc, char* argv[])
 {   
     // get current user and recipient 
-    if (argc < 3) {
-        printf("Usage: %s username conversation-partner\n", argv[0]);
-        return 1;
-    }
-
-    if (strcmp(argv[1], argv[2]) == 0) {
-        printf("You don't need this program to start a conversation with yourself...\n");
-        printf("Usage: %s username conversation-partner\n", argv[0]);
+    if (argc < 2) {
+        printf("Usage: %s conversation-partner\n", argv[0]);
         return 1;
     }
 
     // TODO: get the user from the log in instead, add the user's pub key as a message frame
     // so it matches the pattern the router expects
+    // probably have to move the socket binding logic a bit if I want to get the dealer
+    // identity from user input
+    // current certificates have both public and secret keys in them. they should probably be seperated
 
-    char* user = argv[1];
-    char* recipient = argv[2];
-    printf("assign user and recipient\n");
-
-    // current user certificate    
-    size_t buffer = strlen(user) + 11; // formatted text + '\0'
-    char* user_certificate = malloc(buffer);
-    snprintf(user_certificate, buffer, "keys/%s.cert", user);
-    printf("%s\n", user_certificate);
-    
-    zcert_t *dealer_cert = zcert_load(user_certificate);
-    zcert_print(dealer_cert);
-
-    // connect to server
-    printf("Connecting to server...\n");    
+    char* recipient = argv[1];
+    // printf("assign user and recipient\n");  
+        
     zsock_t *dealer = zsock_new(ZMQ_DEALER);
-    zsock_set_identity(dealer, user);
-    zsock_connect(dealer, "tcp://localhost:5555");
+    // zsock_set_identity(dealer, user);
+    // zsock_connect(dealer, "tcp://localhost:5555");
 
-    printf("Logged in as: %s...\nAttempting to communicate with: %s...\n", user, recipient);
 
     // aes key
     unsigned char key[16] = {
@@ -922,7 +969,7 @@ int main(int argc, char* argv[])
         0x5e, 0x6f, 0x70, 0x81,
         0x92, 0x03, 0x14, 0x25,
         0x36, 0x47, 0x58, 0x69
-    };    
+    }; 
 
     // arguments to be passed around where needed
     Receiver args = {
@@ -935,16 +982,29 @@ int main(int argc, char* argv[])
         .key = key,
         .iv = iv,
         .dealer = dealer,
-        .running = true,
+        // TODO: set it to true where necessary
+        .running = false,
         .is_there_a_msg_to_send = false,
         .user_input = NULL,
-        .recipient = recipient
+        .recipient = recipient,
+        .user_name = NULL
     };
 
     // mutex to prevent race conditions between the threads
     pthread_mutex_init(&args.mutex, NULL);
+    pthread_t process_user_input_thread;
     pthread_t receive_messages_thread;
     pthread_t send_messages_thread;
+
+    // a new thread to run concurrent to the raylib gameloop to get the username, then set
+    // the identity of the dealer and connect to the socket.
+    if (pthread_create(&process_user_input_thread, NULL, process_user_input, &args) != 0) {
+        fprintf(stderr, "Failed to create process user input thread\n");
+        zsock_destroy(&dealer);
+        return 1;
+    } else {
+        printf("Process user input thread created...\n");
+    }
 
     // launch concurrent threads for the message receiver / sender functions
     if (pthread_create(&receive_messages_thread, NULL, receive_messages, &args) != 0) {
@@ -976,6 +1036,20 @@ int main(int argc, char* argv[])
         args.user_input = NULL;
     }
 
+    if (args.user_name){
+        free(args.user_name);
+        args.user_name = NULL;
+    }
+ 
+    if (args.user_cerfificate){
+        free(args.user_cerfificate);
+        args.user_cerfificate = NULL;
+    }
+
+    
+
+    pthread_join(process_user_input_thread, NULL);
+    printf("shutting down process user input thread\n");
     pthread_join(receive_messages_thread, NULL);
     printf("shutting down receive thread...\n");
     pthread_join(send_messages_thread, NULL);
@@ -984,7 +1058,7 @@ int main(int argc, char* argv[])
     pthread_mutex_destroy(&args.mutex);
 
     zsock_destroy(&dealer);    
-    free(user_certificate);
+    
 
     return 0;
 }
