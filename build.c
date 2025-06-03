@@ -10,7 +10,8 @@ int main(int argc, char** argv) {
     Cmd cmd = {0};
     cmd_append(&cmd, 
         "cc", 
-        "router.c",             
+        "router.c",   
+        "-g",          
         "-I/usr/include",
         "-lczmq",
         "-Wall", 
@@ -26,7 +27,8 @@ int main(int argc, char** argv) {
     Cmd cmd2 = {0};
     cmd_append(&cmd2,
         "cc", 
-        "dealer.c",             
+        "dealer.c",   
+        "-g",          
         "-I/usr/include",               //czmq
         "-lczmq", 
         "-I/usr/local/include",         // raylib
