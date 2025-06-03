@@ -884,11 +884,24 @@ int main(int argc, char* argv[])
         return 1;
     }
 
+    // TODO: get the user from the log in instead, add the user's pub key as a message frame
+    // so it matches the pattern the router expects
+
     char* user = argv[1];
     char* recipient = argv[2];
+    printf("assign user and recipient\n");
+
+    // current user certificate    
+    size_t buffer = strlen(user) + 11; // formatted text + '\0'
+    char* user_certificate = malloc(buffer);
+    snprintf(user_certificate, buffer, "keys/%s.cert", user);
+    printf("%s\n", user_certificate);
+    
+    zcert_t *dealer_cert = zcert_load(user_certificate);
+    zcert_print(dealer_cert);
 
     // connect to server
-    printf ("Connecting to server...\n");    
+    printf("Connecting to server...\n");    
     zsock_t *dealer = zsock_new(ZMQ_DEALER);
     zsock_set_identity(dealer, user);
     zsock_connect(dealer, "tcp://localhost:5555");
@@ -903,7 +916,7 @@ int main(int argc, char* argv[])
         0x5c, 0x1f, 0x2e, 0x4a
     };
 
-    // iv key
+    // initialization value
     unsigned char iv[16] = {
         0xa1, 0x2b, 0x3c, 0x4d,
         0x5e, 0x6f, 0x70, 0x81,
@@ -971,6 +984,7 @@ int main(int argc, char* argv[])
     pthread_mutex_destroy(&args.mutex);
 
     zsock_destroy(&dealer);    
+    free(user_certificate);
 
     return 0;
 }
