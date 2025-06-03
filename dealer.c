@@ -56,10 +56,11 @@ typedef struct {
     unsigned char* iv;
     unsigned char* key;
     zsock_t *dealer;    
-    zcert_t *user_cerfificate;
+    zcert_t *user_certificate;
     pthread_mutex_t mutex;    
     bool running;
     bool is_there_a_msg_to_send;
+    bool username_processed;
 } Receiver;
 
 void get_user_input(UserInput *input)
@@ -296,7 +297,9 @@ void *receive_messages(void *args_ptr)
 {
     Receiver *args = (Receiver *)args_ptr;
 
+    
     while (args->running && !zsys_interrupted) { // zsys_interrupted CZMQ: "Global signal indicator, TRUE when user presses Ctrl-C"
+        
         // this blocks until a message is received
         zmsg_t *reply = zmsg_recv(args->dealer); 
         if (!reply) {
@@ -307,6 +310,8 @@ void *receive_messages(void *args_ptr)
         zframe_t *message_content = zmsg_pop(reply);      
 
         if (message_content && sender_id) {
+            pthread_mutex_lock(&args->mutex);
+
             // unencrypted str message received
             // if (zframe_strdup(message_content) != NULL) {
             //     // kill the thread in case of receive thread blocking
@@ -329,7 +334,7 @@ void *receive_messages(void *args_ptr)
             char* self_id = zsock_identity(args->dealer);     
 
             if (ciphertext && sender && strcmp(sender, self_id) != 0){        
-                pthread_mutex_lock(&args->mutex); 
+                // pthread_mutex_lock(&args->mutex); 
 
                 size_t ciphertext_len = zframe_size(message_content);
 
@@ -366,8 +371,9 @@ void *send_messages(void *args_ptr)
 {
     Receiver *args = (Receiver *)args_ptr;
     
-    while (args->running && !zsys_interrupted) {
-        pthread_mutex_lock(&args->mutex);
+    pthread_mutex_lock(&args->mutex);
+
+    while (args->running && !zsys_interrupted) {        
         bool send = args->is_there_a_msg_to_send;
 
         // there is no new message to send,     
@@ -376,6 +382,8 @@ void *send_messages(void *args_ptr)
             usleep(10000);  // 10ms sleep -- TODO: can this be increased ? maybe set it to time it takes to render 1 frame
             continue;
         }
+
+        pthread_mutex_lock(&args->mutex);
 
         size_t plaintext_len = strlen(args->message_data.message_to_send);
         size_t padding = calculate_padding(plaintext_len);  
@@ -435,43 +443,60 @@ zcert_t *get_user_certificate(char* username)
 
 void *process_user_input(void *args_ptr)
 {
-    Receiver *args = (Receiver *)args_ptr;
-    
-    while (!args->running && !zsys_interrupted){
-        pthread_mutex_lock(&args->mutex);
+    Receiver *args = (Receiver *)args_ptr;      
 
+    while (!args->username_processed && !zsys_interrupted){ 
+        pthread_mutex_lock(&args->mutex);    
         // get the username from args
-        if (args->user_name && !args->running){
-            zsock_set_identity(args->dealer, args->user_name);
-            printf("Connecting to server...\n");
-            int rc = zsock_connect(args->dealer, "tcp://localhost:5555");  
-            assert(rc == 0); 
-            printf("Connected to server...\n");
-
-            // get the user's certificate
-            args->user_cerfificate = get_user_certificate(args->user_name);
-            if (!args->user_cerfificate) {
+        if (args->user_name){
+            // get the user's cert with a helper function            
+            args->user_certificate = get_user_certificate(args->user_name);
+            if (!args->user_certificate) {
                 printf("User does not have a certificate\n");
                 pthread_mutex_unlock(&args->mutex);
                 return NULL;
             }
             // zcert_print(args->user_cerfificate);
 
+            pthread_mutex_unlock(&args->mutex);
+
             // server certificate
             const char* server_cert_location = "keys/router.cert";
             zcert_t *server_cert = zcert_load(server_cert_location);
             if (!server_cert) {
                 printf("Unable to load the router's certificate\n");
-                pthread_mutex_unlock(&args->mutex);
                 return NULL;
             }
+
+            const char *router_key = zcert_public_txt(server_cert);
+            printf("router key: %s\n", router_key);
             // zcert_print(server_cert);
 
-            // TODO: finish setting up curve server on dealer side
-                     
-            args->running = true;        
-        }        
-        pthread_mutex_unlock(&args->mutex);
+            pthread_mutex_lock(&args->mutex);
+
+            // finish setting up curve server on dealer side
+            zcert_apply(args->user_certificate, args->dealer);
+            zsock_set_curve_serverkey(args->dealer, router_key);
+            zsock_set_identity(args->dealer, args->user_name);
+
+            pthread_mutex_unlock(&args->mutex);
+
+            printf("Connecting to server...\n");
+            int rc = zsock_connect(args->dealer, "tcp://localhost:5555");  
+            assert(rc == 0); 
+            printf("Connected to server...\n");   
+
+            pthread_mutex_lock(&args->mutex);                     
+            args->username_processed = true;   
+            pthread_mutex_unlock(&args->mutex); 
+            
+            zcert_destroy(&server_cert);
+            // processing is complete
+            break; 
+        } else {
+            pthread_mutex_unlock(&args->mutex);
+            usleep(10000); // sleep to avoid (busy) waiting
+        }
     }
     return NULL;
 }
@@ -949,11 +974,9 @@ int main(int argc, char* argv[])
 
     char* recipient = argv[1];
     // printf("assign user and recipient\n");  
-        
+    
+    // do i need a context? 
     zsock_t *dealer = zsock_new(ZMQ_DEALER);
-    // zsock_set_identity(dealer, user);
-    // zsock_connect(dealer, "tcp://localhost:5555");
-
 
     // aes key
     unsigned char key[16] = {
@@ -983,11 +1006,12 @@ int main(int argc, char* argv[])
         .iv = iv,
         .dealer = dealer,
         // TODO: set it to true where necessary
-        .running = false,
+        .running = true,
         .is_there_a_msg_to_send = false,
         .user_input = NULL,
         .recipient = recipient,
-        .user_name = NULL
+        .user_name = NULL,
+        .username_processed = false
     };
 
     // mutex to prevent race conditions between the threads
@@ -1041,12 +1065,10 @@ int main(int argc, char* argv[])
         args.user_name = NULL;
     }
  
-    if (args.user_cerfificate){
-        free(args.user_cerfificate);
-        args.user_cerfificate = NULL;
-    }
-
-    
+    if (args.user_certificate){
+        free(args.user_certificate);
+        args.user_certificate = NULL;
+    }    
 
     pthread_join(process_user_input_thread, NULL);
     printf("shutting down process user input thread\n");
@@ -1057,8 +1079,7 @@ int main(int argc, char* argv[])
 
     pthread_mutex_destroy(&args.mutex);
 
-    zsock_destroy(&dealer);    
-    
+    zsock_destroy(&dealer);      
 
     return 0;
 }
