@@ -42,6 +42,7 @@ typedef struct {
 } ChatHistory;
 
 typedef struct {
+    zcert_t *user_certificate;
     char *most_recent_received_message;
     char *message_to_send;
     char *sender_id;
@@ -56,7 +57,6 @@ typedef struct {
     unsigned char* iv;
     unsigned char* key;
     zsock_t *dealer;    
-    zcert_t *user_certificate;
     pthread_mutex_t mutex;    
     pthread_cond_t send_cond;
     pthread_cond_t user_name_cond;
@@ -302,31 +302,29 @@ void *receive_messages(void *args_ptr)
     Receiver *args = (Receiver *)args_ptr;
     
     while (args->running && !zsys_interrupted) { // zsys_interrupted CZMQ: "Global signal indicator, TRUE when user presses Ctrl-C"
-        
         // this blocks until a message is received
         zmsg_t *reply = zmsg_recv(args->dealer); 
         if (!reply) {
             continue;
         }
 
+        // reply format [sender id][message content]
         zframe_t *sender_id = zmsg_pop(reply);
         zframe_t *message_content = zmsg_pop(reply);      
 
-        if (message_content && sender_id) {           
+        if (message_content && sender_id) {  
+            // check for shutdown message
+            char* shutdown_msg = zframe_strdup(message_content);             
+            if (strcmp(shutdown_msg, "/shutdown") == 0){
+                printf("Shutting down...\n");
+                zframe_destroy(&message_content);
+                zframe_destroy(&sender_id);
+                zmsg_destroy(&reply);
+                free(shutdown_msg);
+                return NULL;
+            }
 
-            // unencrypted str message received
-            // if (zframe_strdup(message_content) != NULL) {
-            //     // kill the thread in case of receive thread blocking
-            //     char *text = zframe_strdup(message_content);
-
-            //     if (strcmp((char *)text, "/shutdown") == 0) {
-            //         // free resources and break loop
-            //         free(text);
-            //         break;
-            //     }
-            // }
-
-            // encrypted message received / zframe_strdup would truncate at \0 byte
+            // encrypted message received / zframe_strdup would truncate at \0 byte           
             unsigned char* ciphertext = zframe_data(message_content);
             char *sender = zframe_strdup(sender_id);
 
@@ -335,35 +333,39 @@ void *receive_messages(void *args_ptr)
 
             pthread_mutex_lock(&args->mutex);
 
-            char* self_id = zsock_identity(args->dealer);              
+            size_t ciphertext_len = zframe_size(message_content);
 
-            // currently unable to receive your own messages
-            if (strcmp(sender, self_id) != 0){        
+            // the evp encryption already does the padding for you, but just in case add it manually           
+            size_t padding = calculate_padding(ciphertext_len);
+            size_t total = ciphertext_len + padding;
 
-                size_t ciphertext_len = zframe_size(message_content);
+            // allocate memory for the plaintext + a bonus 16
+            unsigned char* plaintext = (unsigned char*)malloc(total + 16);
+            if (!plaintext){
+                printf("ERROR: buy more Ram!\n");
+                // pthread_mutex_unlock(&args->mutex); 
+                // zframe_destroy(&message_content);
+                // zframe_destroy(&sender_id);
+                // zframe_destroy(&recipient_id);
+                // zframe_destroy(&sender_pub_key);
+                // zmsg_destroy(&reply);
+                return NULL;
+            }
+                    
+            // decrypt the message with aes  
+            aes_decrypt(args->key, args->iv, ciphertext, plaintext, total);
 
-                // the evp encryption already does the padding for you, but just in case add it manually           
-                size_t padding = calculate_padding(ciphertext_len);
-                size_t total = ciphertext_len + padding;
+            if (args->message_data.sender_id) {
+                free(args->message_data.sender_id);
+            }
 
-                // allocate memory for the plaintext + a bonus 16
-                unsigned char* plaintext = (unsigned char*)malloc(total + 16);
-                if (!plaintext){
-                    printf("ERROR: buy more Ram!\n");
-                    pthread_mutex_unlock(&args->mutex); 
-                    free(sender);
-                    zframe_destroy(&message_content);
-                    zframe_destroy(&sender_id);
-                    zmsg_destroy(&reply);
-                    return NULL;
-                }
-                        
-                // decrypt the message with aes  
-                aes_decrypt(args->key, args->iv, ciphertext, plaintext, total);
+            if (args->message_data.most_recent_received_message) {
+                free(args->message_data.most_recent_received_message);
+            }
 
-                args->message_data.sender_id = sender;
-                args->message_data.most_recent_received_message = (char *)plaintext;
-            } 
+            args->message_data.sender_id = sender;
+            args->message_data.most_recent_received_message = (char *)plaintext;
+             
             pthread_mutex_unlock(&args->mutex);
         }
         zframe_destroy(&message_content);
@@ -375,13 +377,20 @@ void *receive_messages(void *args_ptr)
 
 void *send_messages(void *args_ptr)
 {
-    Receiver *args = (Receiver *)args_ptr;      
+    Receiver *args = (Receiver *)args_ptr;    
 
     while (args->running && !zsys_interrupted) { 
-        pthread_mutex_lock(&args->mutex);                
-        while (!args->is_there_a_msg_to_send) {   
+        pthread_mutex_lock(&args->mutex);    
+
+        while (!args->is_there_a_msg_to_send && args->running) {   
             // if there is no message to send, wait for the thread to be signalled (idle before then)
             pthread_cond_wait(&args->send_cond, &args->mutex);
+        }
+
+        // when thread gets woken up by a signal on shutdown, break out of the loop
+        if (!args->running) {
+            pthread_mutex_unlock(&args->mutex);
+            break;
         }
 
         size_t plaintext_len = strlen(args->message_data.message_to_send);
@@ -392,7 +401,6 @@ void *send_messages(void *args_ptr)
         unsigned char *ciphertext = (unsigned char *)malloc(ciphertext_len + 16);
         if (!ciphertext) {
             printf("ERROR: buy more Ram!\n");
-            free(ciphertext);
             pthread_mutex_unlock(&args->mutex);
             break;
         }     
@@ -401,25 +409,33 @@ void *send_messages(void *args_ptr)
 
         zmsg_t *msg = zmsg_new();
 
+        // char* self_id = zsock_identity(args->dealer);      
+
+        // Return public part of key pair as 32-byte binary string
+        const byte *sender_pub_key = zcert_public_key(args->message_data.user_certificate);
+
         char* recipient_id = args->message_data.recipient_id;
         assert(recipient_id != NULL);
 
-        char* sender_id = zsock_identity(args->dealer);
-        assert(sender_id != NULL);
+        // char* sender_id = zsock_identity(args->dealer);
+        // assert(sender_id != NULL);
 
         // not encrypted 
         // zframe_t *recip_id = zframe_new(recipient_id, strlen(recipient_id));
         // zframe_t *content = zframe_new(args->message_data.message_to_send, strlen(args->message_data.message_to_send));
 
         // encrypted
+        zframe_t *sender_pub = zframe_new(sender_pub_key, 32);
         zframe_t *recip_id = zframe_new(recipient_id, strlen(recipient_id));
         zframe_t *content = zframe_new(ciphertext, ciphertext_len);
         
-        // [recipient][message_content]
+        // [sender pub key][recipient][message_content]
+        zmsg_append(msg, &sender_pub);
         zmsg_append(msg, &recip_id);
         zmsg_append(msg, &content);
     
         // send
+        printf("Frame count before sending: %zu\n", zmsg_size(msg));
         zmsg_send(&msg, args->dealer);
         args->is_there_a_msg_to_send = false;
 
@@ -452,19 +468,19 @@ void *process_user_input(void *args_ptr)
         pthread_cond_wait(&args->user_name_cond, &args->mutex);
     }   
 
-    // ctrl+c
     if (zsys_interrupted) {
         pthread_mutex_unlock(&args->mutex);
         return NULL;
     }
 
     // get the user's cert with a helper function            
-    args->user_certificate = get_user_certificate(args->user_name);
-    if (!args->user_certificate) {
+    args->message_data.user_certificate = get_user_certificate(args->user_name);
+    if (!args->message_data.user_certificate) {
         printf("User does not have a certificate\n");
         pthread_mutex_unlock(&args->mutex);
         return NULL;
     }
+
     // zcert_print(args->user_cerfificate);
 
     // unlock for some I/O
@@ -485,7 +501,7 @@ void *process_user_input(void *args_ptr)
     pthread_mutex_lock(&args->mutex);
 
     // finish setting up curve server on dealer side
-    zcert_apply(args->user_certificate, args->dealer);
+    zcert_apply(args->message_data.user_certificate, args->dealer);
     zsock_set_curve_serverkey(args->dealer, router_key);
     zsock_set_identity(args->dealer, args->user_name);
 
@@ -543,6 +559,9 @@ void free_message_data(MessageData *data)
         if (data->recipient_id) {
             free(data->recipient_id);
             data->recipient_id = NULL;
+        }
+        if (data->user_certificate) {
+            zcert_destroy(&data->user_certificate);
         }
     }
 }
@@ -681,6 +700,7 @@ bool check_for_new_message(Receiver *args, ChatHistory *chat_log)
     // printf("result of strcmp for new msg check: %d\n", new);
 
     pthread_mutex_unlock(&args->mutex);
+
     return new;    
 }
 
@@ -912,18 +932,23 @@ void init_raylib(Receiver *args)
         EndDrawing();
     }        
     free_chat_log(&chat_log);    
+    
+    // trigger the conditions for thread clean up
+    pthread_mutex_lock(&args->mutex);
+    args->running = false;
+    args->is_there_a_msg_to_send = true;
+    pthread_cond_signal(&args->send_cond);
+    pthread_mutex_unlock(&args->mutex);
 
-    // dummy message to kill off the blocking receive thread
+    // dummy message on shutdown to kill off the blocking receive thread
     zmsg_t *shutdown_msg = zmsg_new();
     char* self_id = zsock_identity(args->dealer);
-    zmsg_addstr(shutdown_msg, self_id);         
-    zmsg_addstr(shutdown_msg, "/shutdown");      
+    unsigned char dummy_pub_key[32] = {0}; 
+    zframe_t *key_frame = zframe_new(dummy_pub_key, 32);
+    zmsg_append(shutdown_msg, &key_frame);  
+    zmsg_addstr(shutdown_msg, self_id);
+    zmsg_addstr(shutdown_msg, "/shutdown");     
     zmsg_send(&shutdown_msg, args->dealer);
-
-    free(self_id);
-    free_user_input(&username, &username_string);
-
-    args->running = false;
 
     CloseWindow();
 }
@@ -1069,7 +1094,18 @@ int main(int argc, char* argv[])
     printf("Initializing raylib...\n");
     init_raylib(&args);
 
-    // cleanup after raylib loop closes
+    // cleanup after raylib loop closes   
+    pthread_join(process_user_input_thread, NULL);
+    printf("shutting down process user input thread\n");
+    pthread_join(receive_messages_thread, NULL);
+    printf("shutting down receive thread...\n");
+    pthread_join(send_messages_thread, NULL);
+    printf("shutting down send thread...\n");
+
+    pthread_cond_destroy(&args.user_name_cond);
+    pthread_cond_destroy(&args.send_cond);
+    pthread_mutex_destroy(&args.mutex);
+
     free_message_data(&args.message_data);
 
     if (args.user_input) {
@@ -1081,22 +1117,6 @@ int main(int argc, char* argv[])
         free(args.user_name);
         args.user_name = NULL;
     }
- 
-    if (args.user_certificate){
-        free(args.user_certificate);
-        args.user_certificate = NULL;
-    }    
-
-    pthread_join(process_user_input_thread, NULL);
-    printf("shutting down process user input thread\n");
-    pthread_join(receive_messages_thread, NULL);
-    printf("shutting down receive thread...\n");
-    pthread_join(send_messages_thread, NULL);
-    printf("shutting down send thread...\n");
-
-    pthread_cond_destroy(&args.user_name_cond);
-    pthread_cond_destroy(&args.send_cond);
-    pthread_mutex_destroy(&args.mutex);
 
     zsock_destroy(&dealer);      
 
