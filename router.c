@@ -47,7 +47,8 @@ int main()
     printf("authentication actor with certificate policy started\n");
 
     zstr_sendx(auth, "CURVE", directory, NULL);
-    zsock_wait(auth);  // Wait for confirmation
+    zsock_wait(auth);
+    
     printf("CURVE authentication configured\n");
     
     zsock_t *router = zsock_new(ZMQ_ROUTER);
@@ -94,24 +95,27 @@ int main()
             break;
         }     
 
+        // messages must adhere to certain shape and size
         size_t msg_size = zmsg_size(msg);
-        if (msg_size < 3) {
+        if (msg_size < 4) {
             printf("Malformed message containing %zu frames (expected at least 3)\n", msg_size);
             zmsg_destroy(&msg);
             continue;
         }
 
-        // add sender's public key's message frame
-        // zframe_t *sender_pub_key = zmsg_pop(msg);
-        // zframe_print(sender_pub_key, "sender pub key:");
-
         // pop sender id
         zframe_t *sender_id = zmsg_pop(msg); 
-        printf("sender id: %s\n", zframe_strhex(sender_id));
+        // printf("sender id: %s\n", zframe_strhex(sender_id));
+        zframe_print(sender_id, "sender id: ");
+
+        // add sender's public key's message frame
+        zframe_t *sender_pub_key = zmsg_pop(msg);
+        zframe_print(sender_pub_key, "sender pub key:");
 
         // pop recipient id
         zframe_t *rec_id = zmsg_pop(msg);
-        printf("recipient id: %s\n", zframe_strhex(rec_id));
+        // printf("recipient id: %s\n", zframe_strhex(rec_id));
+        zframe_print(rec_id, "recipient id: ");
 
         // pop msg content
         zframe_t *message_data = zmsg_pop(msg);   
@@ -119,11 +123,10 @@ int main()
         
         // reply ... forward to recipient
         zmsg_t *reply = zmsg_new();
-        // zmsg_append(reply, &sender_pub_key);
-        zmsg_append(reply, &rec_id);        // ROUTING: destination frame
-        zmsg_append(reply, &sender_id);     // CONTENT: original sender ID (as body)
-        zmsg_append(reply, &message_data);  // CONTENT: message
-        int result = zmsg_send(&reply, router);
+        zmsg_append(reply, &rec_id);                // ROUTING: destination frame
+        zmsg_append(reply, &sender_id);             // CONTENT: original sender ID (as body)
+        zmsg_append(reply, &message_data);          // CONTENT: message
+        int result = zmsg_send(&reply, router);     // resulting in 2 frames in the received message.
         if (result != 0) {
             printf("Failed to send message\n");
             // zmsg_send destroys the message on success, but not on failure
