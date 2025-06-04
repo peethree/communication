@@ -58,6 +58,8 @@ typedef struct {
     zsock_t *dealer;    
     zcert_t *user_certificate;
     pthread_mutex_t mutex;    
+    pthread_cond_t send_cond;
+    pthread_cond_t user_name_cond;
     bool running;
     bool is_there_a_msg_to_send;
     bool username_processed;
@@ -171,6 +173,8 @@ void send_user_input(const char* user_input, char* recipient_id, Receiver *args)
         return;
     }
     args->is_there_a_msg_to_send = true;
+    // there is a message to send, so send a signal the the messaging thread to wake it up 
+    pthread_cond_signal(&args->send_cond);
 
     pthread_mutex_unlock(&args->mutex);
 }
@@ -296,7 +300,6 @@ this function will run concurrent with the raylib window and the send_messages f
 void *receive_messages(void *args_ptr)
 {
     Receiver *args = (Receiver *)args_ptr;
-
     
     while (args->running && !zsys_interrupted) { // zsys_interrupted CZMQ: "Global signal indicator, TRUE when user presses Ctrl-C"
         
@@ -309,8 +312,7 @@ void *receive_messages(void *args_ptr)
         zframe_t *sender_id = zmsg_pop(reply);
         zframe_t *message_content = zmsg_pop(reply);      
 
-        if (message_content && sender_id) {
-            pthread_mutex_lock(&args->mutex);
+        if (message_content && sender_id) {           
 
             // unencrypted str message received
             // if (zframe_strdup(message_content) != NULL) {
@@ -331,10 +333,12 @@ void *receive_messages(void *args_ptr)
             assert(ciphertext != NULL);
             assert(sender != NULL);
 
-            char* self_id = zsock_identity(args->dealer);     
+            pthread_mutex_lock(&args->mutex);
 
-            if (ciphertext && sender && strcmp(sender, self_id) != 0){        
-                // pthread_mutex_lock(&args->mutex); 
+            char* self_id = zsock_identity(args->dealer);              
+
+            // currently unable to receive your own messages
+            if (strcmp(sender, self_id) != 0){        
 
                 size_t ciphertext_len = zframe_size(message_content);
 
@@ -348,7 +352,10 @@ void *receive_messages(void *args_ptr)
                     printf("ERROR: buy more Ram!\n");
                     pthread_mutex_unlock(&args->mutex); 
                     free(sender);
-                    break;
+                    zframe_destroy(&message_content);
+                    zframe_destroy(&sender_id);
+                    zmsg_destroy(&reply);
+                    return NULL;
                 }
                         
                 // decrypt the message with aes  
@@ -356,10 +363,9 @@ void *receive_messages(void *args_ptr)
 
                 args->message_data.sender_id = sender;
                 args->message_data.most_recent_received_message = (char *)plaintext;
-
-                pthread_mutex_unlock(&args->mutex);
-            }              
-        } 
+            } 
+            pthread_mutex_unlock(&args->mutex);
+        }
         zframe_destroy(&message_content);
         zframe_destroy(&sender_id);
         zmsg_destroy(&reply); 
@@ -369,21 +375,14 @@ void *receive_messages(void *args_ptr)
 
 void *send_messages(void *args_ptr)
 {
-    Receiver *args = (Receiver *)args_ptr;
-    
-    pthread_mutex_lock(&args->mutex);
+    Receiver *args = (Receiver *)args_ptr;      
 
-    while (args->running && !zsys_interrupted) {        
-        bool send = args->is_there_a_msg_to_send;
-
-        // there is no new message to send,     
-        if (!send) {   
-            pthread_mutex_unlock(&args->mutex);
-            usleep(10000);  // 10ms sleep -- TODO: can this be increased ? maybe set it to time it takes to render 1 frame
-            continue;
+    while (args->running && !zsys_interrupted) { 
+        pthread_mutex_lock(&args->mutex);                
+        while (!args->is_there_a_msg_to_send) {   
+            // if there is no message to send, wait for the thread to be signalled (idle before then)
+            pthread_cond_wait(&args->send_cond, &args->mutex);
         }
-
-        pthread_mutex_lock(&args->mutex);
 
         size_t plaintext_len = strlen(args->message_data.message_to_send);
         size_t padding = calculate_padding(plaintext_len);  
@@ -394,8 +393,10 @@ void *send_messages(void *args_ptr)
         if (!ciphertext) {
             printf("ERROR: buy more Ram!\n");
             free(ciphertext);
+            pthread_mutex_unlock(&args->mutex);
             break;
-        }       
+        }     
+
         aes_encrypt(args->key, args->iv, plaintext, ciphertext, &ciphertext_len, plaintext_len);    
 
         zmsg_t *msg = zmsg_new();
@@ -427,8 +428,6 @@ void *send_messages(void *args_ptr)
     return NULL;
 }
 
-
-
 zcert_t *get_user_certificate(char* username)
 {
     // current user certificate       
@@ -441,63 +440,70 @@ zcert_t *get_user_certificate(char* username)
     return dealer_cert;
 }
 
+// TODO: give this a more appropriate name or refactor it somewhat
 void *process_user_input(void *args_ptr)
 {
-    Receiver *args = (Receiver *)args_ptr;      
+    Receiver *args = (Receiver *)args_ptr; 
+    
+    pthread_mutex_lock(&args->mutex);
 
-    while (!args->username_processed && !zsys_interrupted){ 
-        pthread_mutex_lock(&args->mutex);    
-        // get the username from args
-        if (args->user_name){
-            // get the user's cert with a helper function            
-            args->user_certificate = get_user_certificate(args->user_name);
-            if (!args->user_certificate) {
-                printf("User does not have a certificate\n");
-                pthread_mutex_unlock(&args->mutex);
-                return NULL;
-            }
-            // zcert_print(args->user_cerfificate);
+    // wait for the signal that a username has been submitted
+    while (!args->user_name && !zsys_interrupted){ 
+        pthread_cond_wait(&args->user_name_cond, &args->mutex);
+    }   
 
-            pthread_mutex_unlock(&args->mutex);
-
-            // server certificate
-            const char* server_cert_location = "keys/router.cert";
-            zcert_t *server_cert = zcert_load(server_cert_location);
-            if (!server_cert) {
-                printf("Unable to load the router's certificate\n");
-                return NULL;
-            }
-
-            const char *router_key = zcert_public_txt(server_cert);
-            printf("router key: %s\n", router_key);
-            // zcert_print(server_cert);
-
-            pthread_mutex_lock(&args->mutex);
-
-            // finish setting up curve server on dealer side
-            zcert_apply(args->user_certificate, args->dealer);
-            zsock_set_curve_serverkey(args->dealer, router_key);
-            zsock_set_identity(args->dealer, args->user_name);
-
-            pthread_mutex_unlock(&args->mutex);
-
-            printf("Connecting to server...\n");
-            int rc = zsock_connect(args->dealer, "tcp://localhost:5555");  
-            assert(rc == 0); 
-            printf("Connected to server...\n");   
-
-            pthread_mutex_lock(&args->mutex);                     
-            args->username_processed = true;   
-            pthread_mutex_unlock(&args->mutex); 
-            
-            zcert_destroy(&server_cert);
-            // processing is complete
-            break; 
-        } else {
-            pthread_mutex_unlock(&args->mutex);
-            usleep(10000); // sleep to avoid (busy) waiting
-        }
+    // ctrl+c
+    if (zsys_interrupted) {
+        pthread_mutex_unlock(&args->mutex);
+        return NULL;
     }
+
+    // get the user's cert with a helper function            
+    args->user_certificate = get_user_certificate(args->user_name);
+    if (!args->user_certificate) {
+        printf("User does not have a certificate\n");
+        pthread_mutex_unlock(&args->mutex);
+        return NULL;
+    }
+    // zcert_print(args->user_cerfificate);
+
+    // unlock for some I/O
+    pthread_mutex_unlock(&args->mutex);
+
+    // server certificate
+    const char* server_cert_location = "keys/router.cert";
+    zcert_t *server_cert = zcert_load(server_cert_location);
+    if (!server_cert) {
+        printf("Unable to load the router's certificate\n");
+        return NULL;
+    }
+
+    const char *router_key = zcert_public_txt(server_cert);
+    printf("router key: %s\n", router_key);
+    // zcert_print(server_cert);
+
+    pthread_mutex_lock(&args->mutex);
+
+    // finish setting up curve server on dealer side
+    zcert_apply(args->user_certificate, args->dealer);
+    zsock_set_curve_serverkey(args->dealer, router_key);
+    zsock_set_identity(args->dealer, args->user_name);
+
+    printf("Connecting to server...\n");
+    int rc = zsock_connect(args->dealer, "tcp://localhost:5555"); 
+    if (rc != 0) {
+        printf("Unable to connect to port 5555\n");
+        pthread_mutex_unlock(&args->mutex);
+        return NULL;
+    } 
+    printf("Connected to server...\n");   
+
+    args->username_processed = true;    
+
+    pthread_mutex_unlock(&args->mutex); 
+    
+    zcert_destroy(&server_cert);    
+
     return NULL;
 }
 
@@ -804,7 +810,10 @@ void init_raylib(Receiver *args)
                 username_string = formulate_string_from_user_input(&username); 
 
                 pthread_mutex_lock(&args->mutex);
+                // at this point the user_name becomes available, 
+                // signal user_name_cond so it can stop waiting.
                 args->user_name = username_string;
+                pthread_cond_signal(&args->user_name_cond);
                 pthread_mutex_unlock(&args->mutex);
             }            
 
@@ -994,6 +1003,7 @@ int main(int argc, char* argv[])
         0x36, 0x47, 0x58, 0x69
     }; 
 
+    
     // arguments to be passed around where needed
     Receiver args = {
         .message_data = {
@@ -1011,11 +1021,18 @@ int main(int argc, char* argv[])
         .user_input = NULL,
         .recipient = recipient,
         .user_name = NULL,
-        .username_processed = false
-    };
+        .username_processed = false           
+    };   
 
     // mutex to prevent race conditions between the threads
     pthread_mutex_init(&args.mutex, NULL);
+
+    // init condition paired with "is_there_new_msg_to_send"
+    pthread_cond_init(&args.send_cond, NULL);
+
+    // init condition for user_name processing
+    pthread_cond_init(&args.user_name_cond, NULL);
+
     pthread_t process_user_input_thread;
     pthread_t receive_messages_thread;
     pthread_t send_messages_thread;
@@ -1052,7 +1069,7 @@ int main(int argc, char* argv[])
     printf("Initializing raylib...\n");
     init_raylib(&args);
 
-    // cleanup 
+    // cleanup after raylib loop closes
     free_message_data(&args.message_data);
 
     if (args.user_input) {
@@ -1077,6 +1094,8 @@ int main(int argc, char* argv[])
     pthread_join(send_messages_thread, NULL);
     printf("shutting down send thread...\n");
 
+    pthread_cond_destroy(&args.user_name_cond);
+    pthread_cond_destroy(&args.send_cond);
     pthread_mutex_destroy(&args.mutex);
 
     zsock_destroy(&dealer);      
