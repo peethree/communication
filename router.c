@@ -19,6 +19,7 @@ int main()
 {
     // load certs from certificate directory
     const char* directory = "keys";
+    printf("Making a certificate store of the /%s directory...\n", directory);
     zcertstore_t *cert_store = zcertstore_new(directory);
     if (!cert_store){
         fprintf(stderr, "Failed to create certificate store\n");
@@ -29,6 +30,7 @@ int main()
 
     // look up router public key and apply its certificate to the socket
     const char* router_pub_key = "A9Iz>yq^pr*w=I1.vTE)NDguZ0[#>GXl-hZ=B>&0";
+    printf("Looking up the router's certificate\n");
     zcert_t *router_cert = zcertstore_lookup(cert_store, router_pub_key);
     if (!router_cert) {
         printf("Certificate does not match the store lookup\n");
@@ -36,7 +38,8 @@ int main()
         return -1;
     }
 
-    // zauth actor instance
+    // zauth actor instance (NULL: default) configurations needed?
+    // runs concurrently with the rest of the program (async authentication?)
     zactor_t *auth = zactor_new(zauth, NULL);
     if (!auth){
         printf("Unable to create authentication actor\n");
@@ -44,11 +47,13 @@ int main()
         zcertstore_destroy(&cert_store);
         return 3;
     }
-    printf("authentication actor with certificate policy started\n");
 
-    zstr_sendx(auth, "CURVE", directory, NULL);
+    int send_ok = zstr_sendx(auth, "CURVE", directory, NULL);
+    if (send_ok == -1) {
+        printf("[ERROR]: Could not send strings\n");
+    }
     zsock_wait(auth);
-    
+
     printf("CURVE authentication configured\n");
     
     zsock_t *router = zsock_new(ZMQ_ROUTER);
@@ -61,15 +66,21 @@ int main()
     }
 
     zcert_apply(router_cert, router);
-    printf("applied cert to router\n");
+    printf("Applied router's certificate to its socket\n");
 
     // set to act as CURVE server
     zsock_set_curve_server(router, 1);
-    printf("set curve server\n");
+    printf("Set socket option to: CURVE\n");
 
     int rc = zsock_bind(router, "tcp://*:5555");
-    assert (rc != -1);
-    printf("router started successfully on port 5555...\n");        
+    if (rc == -1){
+        zactor_destroy(&auth);        
+        zcert_destroy(&router_cert);
+        zcertstore_destroy(&cert_store);   
+        printf("[ERROR]: Unable to bind socket to formatted endpoint");
+        return 1;
+    }
+    printf("router started successfully on port %d...\n", rc);        
 
     // non-blocking:
     // zpoller_t *poller = zpoller_new(router, NULL);
@@ -112,6 +123,19 @@ int main()
         zframe_t *sender_pub_key = zmsg_pop(msg);
         zframe_print(sender_pub_key, "sender pub key:");
 
+        // TODO: if sender_pub_key is not known by the router, stop here
+        char* sender_key_string = zframe_strdup(sender_pub_key);
+        zcert_t *sender_cert = zcertstore_lookup(cert_store, sender_key_string);
+        if (!sender_cert){
+            // sender cert is null n therefore not found
+            // skip this iteration and continue, cleanup
+            printf("Unknown sender\n");
+            free(sender_key_string);
+            zframe_destroy(&sender_pub_key);
+            zmsg_destroy(&msg);            
+            continue;
+        }      
+
         // pop recipient id
         zframe_t *rec_id = zmsg_pop(msg);
         // printf("recipient id: %s\n", zframe_strhex(rec_id));
@@ -126,12 +150,15 @@ int main()
         zmsg_append(reply, &rec_id);                // ROUTING: destination frame
         zmsg_append(reply, &sender_id);             // CONTENT: original sender ID (as body)
         zmsg_append(reply, &message_data);          // CONTENT: message
-        int result = zmsg_send(&reply, router);     // resulting in 2 frames in the received message.
+        int result = zmsg_send(&reply, router);     // resulting in 2 frames in the received message?
         if (result != 0) {
             printf("Failed to send message\n");
             // zmsg_send destroys the message on success, but not on failure
             zmsg_destroy(&reply);
         }
+
+        free(sender_key_string);
+        zframe_destroy(&sender_pub_key);
     }
     // zpoller_destroy(&poller);
     zsock_destroy(&router);
