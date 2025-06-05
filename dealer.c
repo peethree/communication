@@ -411,8 +411,11 @@ void *send_messages(void *args_ptr)
 
         // char* self_id = zsock_identity(args->dealer);      
 
-        // Return public part of key pair as 32-byte binary string
-        const byte *sender_pub_key = zcert_public_key(args->message_data.user_certificate);
+        // Return public part of key pair as 32-byte binary string 
+        // const byte *sender_pub_key = zcert_public_key(args->message_data.user_certificate);
+
+        // z85 armored string
+        const char* sender_pub_key_str = zcert_public_txt(args->message_data.user_certificate);
 
         char* recipient_id = args->message_data.recipient_id;
         assert(recipient_id != NULL);
@@ -425,7 +428,7 @@ void *send_messages(void *args_ptr)
         // zframe_t *content = zframe_new(args->message_data.message_to_send, strlen(args->message_data.message_to_send));
 
         // encrypted
-        zframe_t *sender_pub = zframe_new(sender_pub_key, 32);
+        zframe_t *sender_pub = zframe_new(sender_pub_key_str, strlen(sender_pub_key_str));
         zframe_t *recip_id = zframe_new(recipient_id, strlen(recipient_id));
         zframe_t *content = zframe_new(ciphertext, ciphertext_len);
         
@@ -435,7 +438,6 @@ void *send_messages(void *args_ptr)
         zmsg_append(msg, &content);
     
         // send
-        printf("Frame count before sending: %zu\n", zmsg_size(msg));
         zmsg_send(&msg, args->dealer);
         args->is_there_a_msg_to_send = false;
 
@@ -942,13 +944,20 @@ void init_raylib(Receiver *args)
 
     // dummy message on shutdown to kill off the blocking receive thread
     zmsg_t *shutdown_msg = zmsg_new();
+
+    pthread_mutex_lock(&args->mutex);
+
     char* self_id = zsock_identity(args->dealer);
-    unsigned char dummy_pub_key[32] = {0}; 
-    zframe_t *key_frame = zframe_new(dummy_pub_key, 32);
+    const char* key = zcert_public_txt(args->message_data.user_certificate);
+    zframe_t *key_frame = zframe_new(key, strlen(key));
+
     zmsg_append(shutdown_msg, &key_frame);  
     zmsg_addstr(shutdown_msg, self_id);
     zmsg_addstr(shutdown_msg, "/shutdown");     
     zmsg_send(&shutdown_msg, args->dealer);
+    
+    pthread_mutex_unlock(&args->mutex);
+
 
     CloseWindow();
 }
@@ -999,12 +1008,6 @@ int main(int argc, char* argv[])
         printf("Usage: %s conversation-partner\n", argv[0]);
         return 1;
     }
-
-    // TODO: get the user from the log in instead, add the user's pub key as a message frame
-    // so it matches the pattern the router expects
-    // probably have to move the socket binding logic a bit if I want to get the dealer
-    // identity from user input
-    // current certificates have both public and secret keys in them. they should probably be seperated
 
     char* recipient = argv[1];
     // printf("assign user and recipient\n");  
