@@ -8,9 +8,8 @@ run_router() {
     ./router
 }
 
-# gibberish arg for ui testing purpose
 run_dealer() {
-    ./dealer aaa
+    ./dealer user2
 }
 
 # this needs to be run from kitty terminal else it will break
