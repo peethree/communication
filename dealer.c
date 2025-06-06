@@ -1,17 +1,18 @@
-#include <czmq.h>
 #include <stdio.h>
-#include <unistd.h>
+#include <czmq.h>
+#include <pthread.h>
 #include <stdbool.h>
 #include <string.h>
 #include <time.h>
 #include <assert.h>
-#include <pthread.h>
+// #include <unistd.h> used for sleep()
 
 #define NOB_IMPLEMENTATION
 #define NOB_STRIP_PREFIX
 #include "nob.h"
 
 // raylib LOG enums interfere with system.h logging
+// system.h is included by -I/usr/include in the build I believe
 #undef LOG_DEBUG
 #undef LOG_INFO
 #undef LOG_WARNING
@@ -51,15 +52,15 @@ typedef struct {
 
 typedef struct {
     MessageData message_data;   
+    pthread_mutex_t mutex;    
+    pthread_cond_t send_cond;
+    pthread_cond_t user_name_cond;
     char* user_name; 
     char* user_input;
     char* recipient;
     unsigned char* iv;
     unsigned char* key;
-    zsock_t *dealer;    
-    pthread_mutex_t mutex;    
-    pthread_cond_t send_cond;
-    pthread_cond_t user_name_cond;
+    zsock_t *dealer;  
     bool running;
     bool is_there_a_msg_to_send;
     bool username_processed;
@@ -775,6 +776,9 @@ void mousewheel_scroll(Camera2D *camera)
 //     //
 // }   
 
+// TODO: allow user to register through the raylib window
+// add a button for registration
+// fields to add text
 void init_raylib(Receiver *args)
 {
     InitWindow(800, 600, "client");
@@ -805,81 +809,226 @@ void init_raylib(Receiver *args)
     camera.rotation = 0.0f;
     camera.zoom = 1.0f;
 
+    Rectangle register_button = {
+        .height = 50,
+        .width = 240,
+        .x = 400,
+        .y = 10
+    };
+
+    Rectangle login_button = {
+        .height = 50,
+        .width = 240,
+        .x = 0,
+        .y = 10
+    };
+
+    bool go_to_login = false;
+    bool go_to_registration = false;
+
     while (!WindowShouldClose())
     {
         BeginDrawing();
         ClearBackground(BLACK);
 
         // TODO: do some user authentication
-        if (!authenticated){    
-            // get the user to input his username and password (or register an account?)
-            // first username, then press enter or backspace, then password followed by backspace or enter for submission    
-            if (!username_submitted) {
-                DrawText("USERNAME: ", 10, 0, 50, WHITE);   
+        if (!authenticated){   
+            if (!go_to_login && !go_to_registration){
+                // 2 boxes for the user to click on            
+                DrawRectangle(register_button.x, register_button.y, register_button.width, register_button.height, RED);
+                DrawText("Register", register_button.x + 10, register_button.y, register_button.height - 5, WHITE);
 
-                get_user_input(&username);
-                erase_user_input(&username);
-                draw_user_input(&username);
-            }
+                DrawRectangle(login_button.x, login_button.y, login_button.width, login_button.height, RED);
+                DrawText("Login", login_button.x + 10, login_button.y, login_button.height - 5, WHITE);
+                
+                // look for mouse click collision with the buttons
+                if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)){
+                    Vector2 mp = GetMousePosition();    
+                
+                    if (CheckCollisionPointRec(mp, login_button)) {
+                        // user wants to login
+                        go_to_login = true;
+                    }
 
-            // prevent empty username from being used
-            if (IsKeyPressed(KEY_ENTER) && username.count > 0) {
-                username_submitted = true;
-            }       
-
-            // formulate the username string 
-            if (username_submitted && !username_string) {
-                username_string = formulate_string_from_user_input(&username); 
-
-                pthread_mutex_lock(&args->mutex);
-                // at this point the user_name becomes available, 
-                // signal user_name_cond so it can stop waiting.
-                args->user_name = username_string;
-                pthread_cond_signal(&args->user_name_cond);
-                pthread_mutex_unlock(&args->mutex);
+                    if (CheckCollisionPointRec(mp, register_button)) {
+                        // allow user to register
+                        go_to_registration = true;
+                    }
+                }
             }            
 
-            if (username_submitted && username_string && !username_printed){
-                username_printed = true;
-                printf("username_string: %s\n", username_string);
-            }
+            // get the user to input his username and password (or register an account?)
+            // first username, then press enter or backspace, then password followed by backspace or enter for submission    
+            if (go_to_login) {
+                if (!username_submitted) {
+                    // TODO: move this to a proper spot
+                    DrawText("USERNAME: ", 10, 0, 50, WHITE);   
 
-            if (username_submitted && !password_submitted){
-                DrawText("Password: ", 10, 0, 50, WHITE);
+                    get_user_input(&username);
+                    erase_user_input(&username);
+                    draw_user_input(&username);
+                }
 
-                get_user_input(&password);       
-                erase_user_input(&password);
-                draw_user_input_hidden(&password);
-            }
+                // prevent empty username from being used
+                if (IsKeyPressed(KEY_ENTER) && username.count > 0) {
+                    username_submitted = true;
+                }       
 
-            // prevent empty password from being used
-            if (IsKeyPressed(KEY_ENTER) && password.count > 0) {
-                password_submitted = true;
-            }       
+                // formulate the username string 
+                if (username_submitted && !username_string) {
+                    username_string = formulate_string_from_user_input(&username); 
 
-            // formulate the username string 
-            if (password_submitted && !password_string) {
-                password_string = formulate_string_from_user_input(&password);   
+                    pthread_mutex_lock(&args->mutex);
+                    // at this point the user_name becomes available, 
+                    // signal user_name_cond so it can stop waiting.
+                    args->user_name = username_string;
+                    pthread_cond_signal(&args->user_name_cond);
+                    pthread_mutex_unlock(&args->mutex);
+                }            
+
+                if (username_submitted && username_string && !username_printed){
+                    username_printed = true;
+                    printf("username_string: %s\n", username_string);
+                }
+
+                if (username_submitted && !password_submitted){
+                    DrawText("Password: ", 10, 0, 50, WHITE);
+
+                    get_user_input(&password);       
+                    erase_user_input(&password);
+                    draw_user_input_hidden(&password);
+                }
+
+                // prevent empty password from being used
+                if (IsKeyPressed(KEY_ENTER) && password.count > 0) {
+                    password_submitted = true;
+                }       
+
+                // formulate the password string 
+                if (password_submitted && !password_string) {
+                    password_string = formulate_string_from_user_input(&password);   
+                }   
+
+                // TDOO: check if the username exists before checking the password
+
+                // hash password
+                if (password_submitted && password_string && !password_printed){
+                    password_printed = true;
+                    printf("password_string: %s\n", password_string);
+                    free_user_input(&password, &password_string);
+                }
+
+                // if (authenticate_user(username_string, password_string) == 0) {
+                //     authenticated = true;
+                // }
+
+                if (password_printed){
+                    authenticated = true;
+                }
             }   
+            
+            if (go_to_registration) {
+                // user picks a user name
+                if (!username_submitted) {
+                    // TODO: 
+                    DrawText("USERNAME: ", 10, 0, 50, WHITE);   
 
-            // TDOO: check if the username exists before checking the password
+                    get_user_input(&username);
+                    erase_user_input(&username);
+                    draw_user_input(&username);
+                }
 
-            // hash password
-            if (password_submitted && password_string && !password_printed){
-                password_printed = true;
-                printf("password_string: %s\n", password_string);
-                free_user_input(&password, &password_string);
-            }
+                // prevent empty username from being used
+                if (IsKeyPressed(KEY_ENTER) && username.count > 0) {
+                    username_submitted = true;
+                }  
 
-            // if (authenticate_user(username_string, password_string) == 0) {
-            //     authenticated = true;
-            // }
+                // formulate the username string 
+                if (username_submitted && !username_string) {
+                    username_string = formulate_string_from_user_input(&username); 
 
-            if (password_printed){
-                authenticated = true;
+                    // TODO: check if it already exists on the router side!
+                    // send a registration msg to the router
+                    // [user id][user pub key]
+                    zmsg_t *registration_msg = zmsg_new();
+                    size_t user_name_len = strlen(username_string);
+
+                    zframe_t *user_id = zframe_new(&username_string, user_name_len);
+
+                    // generate a user certificate
+                    zsys_dir_create("keys");
+
+                    zcert_t *user_cert = zcert_new();
+                    // get a text representation to get the length of the key, in the future maybe hardcode 40 for length
+                    char* user_pub = zcert_public_txt(user_cert);
+                   
+                    size_t user_cert_buffer = user_name_len + 11; // dir + username + .cert + '\0'
+                    char* user_cert_loc = malloc(user_cert_buffer);
+                    snprintf(user_cert_loc, user_cert_buffer, "keys/%s.cert", username);
+
+                    // save the user's certificate in the keys dir
+                    zcert_save(user_cert_loc, user_cert_loc);
+
+                    zframe_t *user_cert_frame = zframe_new(&user_cert, strlen(user_pub));
+
+                    zmsg_append(&registration_msg, user_id);
+                    zmsg_append(&registration_msg, user_cert_frame);
+                    // figure this out
+                    zmsg_send(&registration_msg, args->dealer);                   
+
+                    // after the registration message has been sent to the router
+                    // TODO: 
+
+                    pthread_mutex_lock(&args->mutex);
+                    args->user_name = username_string;
+                    pthread_cond_signal(&args->user_name_cond);
+                    pthread_mutex_unlock(&args->mutex);
+                }            
+
+                if (username_submitted && username_string && !username_printed){
+                    username_printed = true;
+                    printf("username_string: %s\n", username_string);
+                }
+
+                // pick a password
+                if (username_submitted && !password_submitted){
+                    // TODO:
+                    DrawText("Password: ", 10, 0, 50, WHITE);
+
+                    get_user_input(&password);       
+                    erase_user_input(&password);
+                    draw_user_input_hidden(&password);
+                }
+
+                // prevent empty password from being used
+                if (IsKeyPressed(KEY_ENTER) && password.count > 0) {
+                    // TODO: in the future add some password rules 
+                    password_submitted = true;
+                }       
+
+                // formulate the password string 
+                if (password_submitted && !password_string) {
+                    password_string = formulate_string_from_user_input(&password);   
+                }   
+
+                // hash password
+                if (password_submitted && password_string && !password_printed){
+                    password_printed = true;
+                    printf("password_string: %s\n", password_string);
+                    free_user_input(&password, &password_string);
+                }
+
+                // if (authenticate_user(username_string, password_string) == 0) {
+                //     authenticated = true;
+                // }
+
+                if (password_printed){
+                    authenticated = true;
+                }   
             }
         }
 
+        // at this point user has been authenticated and should have a set of keys
         if (authenticated){
             BeginMode2D(camera);
 
@@ -955,7 +1104,7 @@ void init_raylib(Receiver *args)
     zmsg_addstr(shutdown_msg, self_id);
     zmsg_addstr(shutdown_msg, "/shutdown");     
     zmsg_send(&shutdown_msg, args->dealer);
-    
+
     pthread_mutex_unlock(&args->mutex);
 
 
@@ -965,7 +1114,6 @@ void init_raylib(Receiver *args)
 // TODO: figure out how to get an AES key to both parties safely.
 // figure out a way to pick a recipient through a GUI
 // implement raygui for gui building?
-// add dealer authentication
 // create users / auth users
 // change usage to use username instead of cl arg   
 // account creation / database?
@@ -1003,7 +1151,7 @@ use the session key to decrypt the message
 
 int main(int argc, char* argv[])
 {   
-    // get current user and recipient 
+    // run program and add intended target
     if (argc < 2) {
         printf("Usage: %s conversation-partner\n", argv[0]);
         return 1;
@@ -1015,6 +1163,8 @@ int main(int argc, char* argv[])
     // do i need a context? 
     zsock_t *dealer = zsock_new(ZMQ_DEALER);
 
+    // TODO: figure out a non-hardcoded solution
+    // aes + iv need to be the same for whoever is communicating with one another for decryption to work
     // aes key
     unsigned char key[16] = {
         0x3f, 0x5a, 0x1c, 0x8e,
@@ -1030,9 +1180,8 @@ int main(int argc, char* argv[])
         0x92, 0x03, 0x14, 0x25,
         0x36, 0x47, 0x58, 0x69
     }; 
-
     
-    // arguments to be passed around where needed
+    // initialize arguments to be passed around where needed (not thread-safe)
     Receiver args = {
         .message_data = {
             .message_to_send = NULL,
@@ -1043,7 +1192,6 @@ int main(int argc, char* argv[])
         .key = key,
         .iv = iv,
         .dealer = dealer,
-        // TODO: set it to true where necessary
         .running = true,
         .is_there_a_msg_to_send = false,
         .user_input = NULL,
@@ -1056,6 +1204,7 @@ int main(int argc, char* argv[])
     pthread_mutex_init(&args.mutex, NULL);
 
     // init condition paired with "is_there_new_msg_to_send"
+    // for signaling (waking up) a waiting thread
     pthread_cond_init(&args.send_cond, NULL);
 
     // init condition for user_name processing
@@ -1097,7 +1246,9 @@ int main(int argc, char* argv[])
     printf("Initializing raylib...\n");
     init_raylib(&args);
 
-    // cleanup after raylib loop closes   
+    // cleanup
+    
+    // kill off threads
     pthread_join(process_user_input_thread, NULL);
     printf("shutting down process user input thread\n");
     pthread_join(receive_messages_thread, NULL);
@@ -1105,6 +1256,7 @@ int main(int argc, char* argv[])
     pthread_join(send_messages_thread, NULL);
     printf("shutting down send thread...\n");
 
+    // destroy conditions + mutex
     pthread_cond_destroy(&args.user_name_cond);
     pthread_cond_destroy(&args.send_cond);
     pthread_mutex_destroy(&args.mutex);
