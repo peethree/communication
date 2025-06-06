@@ -8,6 +8,11 @@ run_router() {
     ./router
 }
 
+# gibberish arg for ui testing purpose
+run_dealer() {
+    ./dealer aaa
+}
+
 # this needs to be run from kitty terminal else it will break
 test() {
     ./test.sh
@@ -31,6 +36,10 @@ case "$1" in
     run_router
     exit 0
     ;;
+  run_dealer|d)
+    run_dealer
+    exit 0
+    ;;  
   test|t)
     test
     exit 0
