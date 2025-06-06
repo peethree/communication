@@ -107,6 +107,12 @@ int main()
         }     
 
         // messages must adhere to certain shape and size
+
+        // if msg size has size of a registration message (2): 
+            // registration code here.
+            // add user's pub key to certstore
+
+        // TODO: update this
         size_t msg_size = zmsg_size(msg);
         if (msg_size < 4) {
             printf("Malformed message containing %zu frames (expected at least 3)\n", msg_size);
