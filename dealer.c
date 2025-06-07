@@ -946,6 +946,12 @@ void init_raylib(Receiver *args)
                 // formulate the username string 
                 if (username_submitted && !username_string) {
                     username_string = formulate_string_from_user_input(&username); 
+                }            
+
+                if (username_submitted && username_string && !username_printed){
+                    username_printed = true;
+                    printf("username_string: %s\n", username_string);
+
 
                     // TODO: check if it already exists on the router side!
                     // send a registration msg to the router
@@ -960,34 +966,30 @@ void init_raylib(Receiver *args)
 
                     zcert_t *user_cert = zcert_new();
                     // get a text representation to get the length of the key, in the future maybe hardcode 40 for length
-                    char* user_pub = zcert_public_txt(user_cert);
+                    const char* user_pub = zcert_public_txt(user_cert);
                    
                     size_t user_cert_buffer = user_name_len + 11; // dir + username + .cert + '\0'
                     char* user_cert_loc = malloc(user_cert_buffer);
-                    snprintf(user_cert_loc, user_cert_buffer, "keys/%s.cert", username);
+                    snprintf(user_cert_loc, user_cert_buffer, "keys/%s.cert", username_string);
 
                     // save the user's certificate in the keys dir
-                    zcert_save(user_cert_loc, user_cert_loc);
+                    zcert_save(user_cert, user_cert_loc);
 
                     zframe_t *user_cert_frame = zframe_new(&user_cert, strlen(user_pub));
 
-                    zmsg_append(&registration_msg, user_id);
-                    zmsg_append(&registration_msg, user_cert_frame);
+                    zmsg_append(registration_msg, &user_id);
+                    zmsg_append(registration_msg, &user_cert_frame);
                     // figure this out
                     zmsg_send(&registration_msg, args->dealer);                   
 
                     // after the registration message has been sent to the router
                     // TODO: 
+                    zmsg_recv(args->dealer);
 
                     pthread_mutex_lock(&args->mutex);
                     args->user_name = username_string;
                     pthread_cond_signal(&args->user_name_cond);
                     pthread_mutex_unlock(&args->mutex);
-                }            
-
-                if (username_submitted && username_string && !username_printed){
-                    username_printed = true;
-                    printf("username_string: %s\n", username_string);
                 }
 
                 // pick a password
