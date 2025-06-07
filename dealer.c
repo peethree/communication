@@ -64,6 +64,7 @@ typedef struct {
     bool running;
     bool is_there_a_msg_to_send;
     bool username_processed;
+    bool registration_msg;
 } Receiver;
 
 void get_user_input(UserInput *input)
@@ -309,6 +310,20 @@ void *receive_messages(void *args_ptr)
             continue;
         }
 
+        // message received
+        size_t reply_size = zmsg_size(reply);
+        printf("message received of size: %zu\n", reply_size);
+
+        // it could be a registration message signal from the router
+        // [msg content]
+        // TODO: 
+        if (reply_size == 1) {
+            // check if it's ok
+            zframe_t *rmsg = zmsg_pop(reply);
+            zframe_print(rmsg, "Message received from router: ");                  
+            continue;
+        }
+
         // reply format [sender id][message content]
         zframe_t *sender_id = zmsg_pop(reply);
         zframe_t *message_content = zmsg_pop(reply);      
@@ -393,6 +408,8 @@ void *send_messages(void *args_ptr)
             pthread_mutex_unlock(&args->mutex);
             break;
         }
+
+        // registration message
 
         size_t plaintext_len = strlen(args->message_data.message_to_send);
         size_t padding = calculate_padding(plaintext_len);  
@@ -952,21 +969,16 @@ void init_raylib(Receiver *args)
                     username_printed = true;
                     printf("username_string: %s\n", username_string);
 
-
                     // TODO: check if it already exists on the router side!
                     // send a registration msg to the router
                     // [user id][user pub key]
-                    zmsg_t *registration_msg = zmsg_new();
                     size_t user_name_len = strlen(username_string);
-
-                    zframe_t *user_id = zframe_new(&username_string, user_name_len);
 
                     // generate a user certificate
                     zsys_dir_create("keys");
-
                     zcert_t *user_cert = zcert_new();
                     // get a text representation to get the length of the key, in the future maybe hardcode 40 for length
-                    const char* user_pub = zcert_public_txt(user_cert);
+                    // const char* user_pub = zcert_public_txt(user_cert);
                    
                     size_t user_cert_buffer = user_name_len + 11; // dir + username + .cert + '\0'
                     char* user_cert_loc = malloc(user_cert_buffer);
@@ -974,21 +986,36 @@ void init_raylib(Receiver *args)
 
                     // save the user's certificate in the keys dir
                     zcert_save(user_cert, user_cert_loc);
-
-                    zframe_t *user_cert_frame = zframe_new(&user_cert, strlen(user_pub));
-
-                    zmsg_append(registration_msg, &user_id);
-                    zmsg_append(registration_msg, &user_cert_frame);
-                    // figure this out
-                    zmsg_send(&registration_msg, args->dealer);                   
+                    zcert_print(user_cert);
 
                     // after the registration message has been sent to the router
-                    // TODO: 
-                    zmsg_recv(args->dealer);
+                    // TODO: wait for the signal and based on its value (0 (byte) for success)
+                    // carry on or break
+                    // a message 
 
                     pthread_mutex_lock(&args->mutex);
+                    // populate the registration message so the send_messages thread can send it
+                    // [sender id][pub key]
+
+                    // make sure it's free before populating it
+                    if (args->message_data.sender_id) {
+                        free(args->message_data.sender_id);
+                    }
+
+                    if (args->message_data.user_certificate) {
+                        zcert_destroy(&args->message_data.user_certificate);
+                    }
+
+                    args->message_data.sender_id = username_string;
+                    args->message_data.user_certificate = user_cert;
+
+                    args->registration_msg = true;
+                    args->is_there_a_msg_to_send = true;                    
+
                     args->user_name = username_string;
+
                     pthread_cond_signal(&args->user_name_cond);
+
                     pthread_mutex_unlock(&args->mutex);
                 }
 
@@ -1199,7 +1226,8 @@ int main(int argc, char* argv[])
         .user_input = NULL,
         .recipient = recipient,
         .user_name = NULL,
-        .username_processed = false           
+        .username_processed = false,
+        .registration_msg = false   
     };   
 
     // mutex to prevent race conditions between the threads
