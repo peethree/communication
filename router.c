@@ -107,64 +107,84 @@ int main()
         }     
 
         // messages must adhere to certain shape and size
+        size_t msg_size = zmsg_size(msg);
 
-        // if msg size has size of a registration message (2): 
+        // if msg size has size of a registration message (2):
+        if (msg_size == 2) {
+            // size 2 msg received
+            printf("received message (registration?)");
+
+            // registration sender id
+            zframe_t *reg_id = zmsg_pop(msg);
+            zframe_print(reg_id, "registration id: ");
+
+            // registering user cert
+            zframe_t *reg_cert = zmsg_pop(msg);
+            zframe_print(reg_cert, "registering user's pub key: ");
+
+            // check if the pub key already exists
+
             // registration code here.
             // add user's pub key to certstore
+            // break;
 
-        // TODO: update this
-        size_t msg_size = zmsg_size(msg);
-        if (msg_size < 4) {
-            printf("Malformed message containing %zu frames (expected at least 3)\n", msg_size);
-            zmsg_destroy(&msg);
-            continue;
-        }
+            // if everything is ok, send signal
+            zmsg_t *reply = zmsg_new_signal(0);
+            int signal = zmsg_send(&reply, reg_id);
+            if (signal != 0) {
+                printf("Unable to send the registration signal\n");
+                zmsg_destroy(&reply);
+            }
+        } 
 
-        // pop sender id
-        zframe_t *sender_id = zmsg_pop(msg); 
-        // printf("sender id: %s\n", zframe_strhex(sender_id));
-        zframe_print(sender_id, "sender id: ");
+        // regular message size
+        if (msg_size == 4) {
+            // pop sender id
+            zframe_t *sender_id = zmsg_pop(msg); 
+            // printf("sender id: %s\n", zframe_strhex(sender_id));
+            zframe_print(sender_id, "sender id: ");
 
-        // add sender's public key's message frame
-        zframe_t *sender_pub_key = zmsg_pop(msg);
-        zframe_print(sender_pub_key, "sender pub key:");
+            // add sender's public key's message frame
+            zframe_t *sender_pub_key = zmsg_pop(msg);
+            zframe_print(sender_pub_key, "sender pub key:");
 
-        // TODO: if sender_pub_key is not known by the router, stop here
-        char* sender_key_string = zframe_strdup(sender_pub_key);
-        zcert_t *sender_cert = zcertstore_lookup(cert_store, sender_key_string);
-        if (!sender_cert){
-            // sender cert is null n therefore not found
-            // skip this iteration and continue, cleanup
-            printf("Unknown sender\n");
+            // TODO: if sender_pub_key is not known by the router, stop here
+            char* sender_key_string = zframe_strdup(sender_pub_key);
+            zcert_t *sender_cert = zcertstore_lookup(cert_store, sender_key_string);
+            if (!sender_cert){
+                // sender cert is null n therefore not found
+                // skip this iteration and continue, cleanup
+                printf("Unknown sender\n");
+                free(sender_key_string);
+                zframe_destroy(&sender_pub_key);
+                zmsg_destroy(&msg);            
+                continue;
+            }      
+
+            // pop recipient id
+            zframe_t *rec_id = zmsg_pop(msg);
+            // printf("recipient id: %s\n", zframe_strhex(rec_id));
+            zframe_print(rec_id, "recipient id: ");
+
+            // pop msg content
+            zframe_t *message_data = zmsg_pop(msg);   
+            zframe_print(message_data, "cipher: ");
+            
+            // reply ... forward to recipient
+            zmsg_t *reply = zmsg_new();
+            zmsg_append(reply, &rec_id);                // ROUTING: destination frame
+            zmsg_append(reply, &sender_id);             // CONTENT: original sender ID (as body)
+            zmsg_append(reply, &message_data);          // CONTENT: message
+            int result = zmsg_send(&reply, router);     // resulting in 2 frames in the received message?
+            if (result != 0) {
+                printf("Failed to send message\n");
+                // zmsg_send destroys the message on success, but not on failure
+                zmsg_destroy(&reply);
+            }
+
             free(sender_key_string);
             zframe_destroy(&sender_pub_key);
-            zmsg_destroy(&msg);            
-            continue;
-        }      
-
-        // pop recipient id
-        zframe_t *rec_id = zmsg_pop(msg);
-        // printf("recipient id: %s\n", zframe_strhex(rec_id));
-        zframe_print(rec_id, "recipient id: ");
-
-        // pop msg content
-        zframe_t *message_data = zmsg_pop(msg);   
-        zframe_print(message_data, "cipher: ");
-        
-        // reply ... forward to recipient
-        zmsg_t *reply = zmsg_new();
-        zmsg_append(reply, &rec_id);                // ROUTING: destination frame
-        zmsg_append(reply, &sender_id);             // CONTENT: original sender ID (as body)
-        zmsg_append(reply, &message_data);          // CONTENT: message
-        int result = zmsg_send(&reply, router);     // resulting in 2 frames in the received message?
-        if (result != 0) {
-            printf("Failed to send message\n");
-            // zmsg_send destroys the message on success, but not on failure
-            zmsg_destroy(&reply);
         }
-
-        free(sender_key_string);
-        zframe_destroy(&sender_pub_key);
     }
     // zpoller_destroy(&poller);
     zsock_destroy(&router);
