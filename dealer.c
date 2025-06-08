@@ -932,7 +932,6 @@ void init_raylib(Receiver *args)
                 if (password_submitted && password_string && !password_printed){
                     password_printed = true;
                     printf("password_string: %s\n", password_string);
-                    free_user_input(&password, &password_string);
                 }
 
                 // if (authenticate_user(username_string, password_string) == 0) {
@@ -941,6 +940,8 @@ void init_raylib(Receiver *args)
 
                 if (password_printed){
                     authenticated = true;
+                    free_user_input(&username, &username_string);
+                    free_user_input(&password, &password_string);
                 }
             }   
             
@@ -988,6 +989,10 @@ void init_raylib(Receiver *args)
                     zcert_save(user_cert, user_cert_loc);
                     zcert_print(user_cert);
 
+                    // destroy after save
+                    zcert_destroy(&user_cert);
+                    free(user_cert_loc);                    
+                    
                     // after the registration message has been sent to the router
                     // TODO: wait for the signal and based on its value (0 (byte) for success)
                     // carry on or break
@@ -1006,14 +1011,16 @@ void init_raylib(Receiver *args)
                         zcert_destroy(&args->message_data.user_certificate);
                     }
 
-                    args->message_data.sender_id = username_string;
+                    args->message_data.sender_id = strdup(username_string);
                     args->message_data.user_certificate = user_cert;
 
+                    // send a signal that username can be processed
+                    // this should wake up the dedicated thread
                     args->registration_msg = true;
-                    args->is_there_a_msg_to_send = true;                    
-
-                    args->user_name = username_string;
-
+                    args->is_there_a_msg_to_send = true;     
+                    // set user_name which is required by processing thread 
+                    args->user_name = strdup(username_string);         
+                    
                     pthread_cond_signal(&args->user_name_cond);
 
                     pthread_mutex_unlock(&args->mutex);
@@ -1044,7 +1051,6 @@ void init_raylib(Receiver *args)
                 if (password_submitted && password_string && !password_printed){
                     password_printed = true;
                     printf("password_string: %s\n", password_string);
-                    free_user_input(&password, &password_string);
                 }
 
                 // if (authenticate_user(username_string, password_string) == 0) {
@@ -1053,6 +1059,8 @@ void init_raylib(Receiver *args)
 
                 if (password_printed){
                     authenticated = true;
+                    free_user_input(&username, &username_string);
+                    free_user_input(&password, &password_string);
                 }   
             }
         }
@@ -1108,7 +1116,6 @@ void init_raylib(Receiver *args)
                 add_to_chat_log(args, &chat_log);            
             }     
         }   
-
         EndDrawing();
     }        
     free_chat_log(&chat_log);    
@@ -1135,7 +1142,6 @@ void init_raylib(Receiver *args)
     zmsg_send(&shutdown_msg, args->dealer);
 
     pthread_mutex_unlock(&args->mutex);
-
 
     CloseWindow();
 }
