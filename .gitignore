@@ -2,5 +2,8 @@ router
 dealer
 build
 build.old
-keys
+keys_client
+keys_router
 key_gen
+test
+test.c

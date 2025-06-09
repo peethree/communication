@@ -28,7 +28,7 @@ int main(int argc, char** argv) {
     cmd_append(&cmd2,
         "cc", 
         "dealer.c",   
-        "-g",          
+        "-g",                                     
         "-I/usr/include",               //czmq
         "-lczmq", 
         "-I/usr/local/include",         // raylib
