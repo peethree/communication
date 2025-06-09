@@ -18,8 +18,8 @@
 int main()
 {
     // load certs from certificate directory
-    const char* directory = "keys";
-    printf("Making a certificate store of the /%s directory...\n", directory);
+    const char* directory = "keys_router";
+    printf("Making a certificate store of the %s directory...\n", directory);
     zcertstore_t *cert_store = zcertstore_new(directory);
     if (!cert_store){
         fprintf(stderr, "Failed to create certificate store\n");
@@ -28,7 +28,7 @@ int main()
 
     // zcertstore_print(certstore);
 
-    // look up router public key and apply its certificate to the socket
+    // look up router public key
     const char* router_pub_key = "A9Iz>yq^pr*w=I1.vTE)NDguZ0[#>GXl-hZ=B>&0";
     printf("Looking up the router's certificate\n");
     zcert_t *router_cert = zcertstore_lookup(cert_store, router_pub_key);
@@ -37,6 +37,10 @@ int main()
         zcertstore_destroy(&cert_store);
         return -1;
     }
+
+    // TODO:
+    // registration keys
+    // only allow the registration cert for registering, not for messaging
 
     // zauth actor instance (NULL: default) configurations needed?
     // runs concurrently with the rest of the program (async authentication?)
@@ -65,6 +69,7 @@ int main()
         return 2;
     }
 
+    // apply the router's certificate to the socket
     zcert_apply(router_cert, router);
     printf("Applied router's certificate to its socket\n");
 
@@ -109,26 +114,63 @@ int main()
         // messages must adhere to certain shape and size
         size_t msg_size = zmsg_size(msg);
 
-        // if msg size has size of a registration message (2):
-        if (msg_size == 2) {
-            // size 2 msg received
-            printf("received message (registration?)");
+        printf("received message size: %zu\n", msg_size);
 
+        // if msg size has size of a registration message (3):
+        // [sender id][registration key][user cert  ]
+        if (msg_size == 3) {
+            // size 2 msg received
             // registration sender id
             zframe_t *reg_id = zmsg_pop(msg);
             zframe_print(reg_id, "registration id: ");
 
             // registering user cert
             zframe_t *reg_cert = zmsg_pop(msg);
-            zframe_print(reg_cert, "registering user's pub key: ");
+            zframe_print(reg_cert, "registration key: ");
 
-            // check if the pub key already exists
+            // check if the user provided the correct registration key
+            char *reg_cert_str = zframe_strdup(reg_cert);
+            if (!reg_cert_str) {
+                printf("no key received\n");
+                // TODO:
+            }
+
+            printf("reg cert string: %s\n", reg_cert_str);
+
+            if (zcertstore_lookup(cert_store, reg_cert_str) == NULL) {
+                printf("false registration certificate\n");
+                break;
+            }            
 
             // registration code here.
             // add user's pub key to certstore
             // break;
 
-            // if everything is ok, send signal
+            zframe_t *user_cert = zmsg_pop(msg);
+            zframe_print(user_cert, "user's actual cert: ");
+
+            char *user_cert_str = zframe_strdup(user_cert);
+            if (!user_cert_str) {
+                printf("no key received\n");
+            }
+
+            // make a new certificate for the router to store as an accepted user
+            zcert_t *user_cert_pub = zcert_new_from((const unsigned char*)user_cert_str, NULL);
+
+            // get the username and format where to store the cert
+            char* username = zframe_strdup(reg_id);
+            size_t cert_buffer = strlen(username) + 18; // formatted text + '\0'
+            char* certificate_location = malloc(cert_buffer);
+            snprintf(certificate_location, cert_buffer, "keys_router/%s.cert", username);
+
+            // save the cert to disc
+            zcert_save(user_cert_pub, certificate_location);
+
+            // free when no longer needed
+            free(username);
+            free(certificate_location);
+
+            // everything should be ok, send signal
             zmsg_t *reply = zmsg_new_signal(0);
             int signal = zmsg_send(&reply, reg_id);
             if (signal != 0) {
