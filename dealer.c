@@ -56,6 +56,7 @@ typedef struct {
     pthread_mutex_t mutex;    
     pthread_cond_t send_cond;
     pthread_cond_t user_name_cond;
+    pthread_cond_t connected;
     char* user_name; 
     char* user_input;
     char* recipient;
@@ -66,6 +67,8 @@ typedef struct {
     bool is_there_a_msg_to_send;
     bool username_processed;
     bool registration_msg;
+    bool connection_established;
+    bool registered;
 } Receiver;
 
 void get_user_input(UserInput *input)
@@ -415,21 +418,42 @@ void *send_messages(void *args_ptr)
             // [user id][registration key][user pub key]
             zmsg_t *msg = zmsg_new();
 
-            // sender ID is added automatically
-            // add the other required message frames needed for registration
-            const char* reg_key_str = zcert_public_txt(args->message_data.user_certificate);
+            // [user id]
+            // const char* id = args->user_name;
+            // zframe_t *id_frame = zframe_new(id, strlen(id));
+
+            const char* reg_cert_location = "keys_client/registration.cert";
+            zcert_t *reg_cert = zcert_load(reg_cert_location);
+
+            // [reg key]
+            const char* reg_key_str = zcert_public_txt(reg_cert);
             assert(reg_key_str != NULL);
             zframe_t *reg_key = zframe_new(reg_key_str, strlen(reg_key_str));
 
+            // [pub user key]
             const char* user_key_str = zcert_public_txt(args->message_data.user_certificate);
             assert(user_key_str != NULL);
             zframe_t *user_pub_key = zframe_new(user_key_str, strlen(user_key_str));
             
+            // zmsg_append(msg, &id_frame);
             zmsg_append(msg, &reg_key);
             zmsg_append(msg, &user_pub_key);
 
+            size_t msg_size = zmsg_size(msg);
+            printf("registration message size: %zu\n", msg_size);
+
+            zmsg_print(msg);
+
+            // wait for connection signal
+            if (!args->connection_established) {                
+                printf("not connected...\n");
+                pthread_cond_wait(&args->connected, &args->mutex);
+                continue;
+            }
+
             // send msg
             zmsg_send(&msg, args->dealer);
+            printf("sent reg message\n");    
 
             // set flags
             args->is_there_a_msg_to_send = false;
@@ -484,8 +508,11 @@ void *send_messages(void *args_ptr)
         zmsg_append(msg, &sender_pub);
         zmsg_append(msg, &recip_id);
         zmsg_append(msg, &content);
-    
+        
+        zmsg_print(msg);
+        printf("message size before sending: %zu\n", zmsg_size(msg));
         // send
+     
         zmsg_send(&msg, args->dealer);
         args->is_there_a_msg_to_send = false;
 
@@ -525,18 +552,21 @@ void *process_user_input(void *args_ptr)
         return NULL;
     }
 
+    // a copy so I can free the mutex earlier
+    char* username = strdup(args->user_name);
+
+    // unlock mutex for some I/o
+    pthread_mutex_unlock(&args->mutex);
+
     // get the user's cert with a helper function            
-    args->message_data.user_certificate = get_user_certificate(args->user_name);
-    if (!args->message_data.user_certificate) {
+    zcert_t *user_cert = get_user_certificate(username);
+    if (!user_cert) {
         printf("User does not have a certificate\n");
-        pthread_mutex_unlock(&args->mutex);
+        free(username);
         return NULL;
     }
 
-    zcert_print(args->message_data.user_certificate);
-
-    // unlock for some I/O
-    pthread_mutex_unlock(&args->mutex);
+    zcert_print(user_cert);
 
     // server certificate
     const char* server_cert_location = "keys_client/router.cert";
@@ -552,26 +582,58 @@ void *process_user_input(void *args_ptr)
 
     pthread_mutex_lock(&args->mutex);
 
-    // finish setting up curve server on dealer side
-    zcert_apply(args->message_data.user_certificate, args->dealer);
-    zsock_set_curve_serverkey(args->dealer, router_key);
-    // printf("setting identity as: %s\n", args->user_name);
-    zsock_set_identity(args->dealer, args->user_name);
+    // store the cert in message data
+    if (args->message_data.user_certificate) {
+        zcert_destroy(&args->message_data.user_certificate);
+    }
+    args->message_data.user_certificate = user_cert;
+
+    // finish setting up curve server on dealer side    
+
+    // in case the user isn't registered yet, 
+    // use temp registration cert to get the message to the router
+    if (!args->registered) {
+        zcert_apply(args->message_data.registration_certificate, args->dealer);
+        zsock_set_curve_serverkey(args->dealer, router_key);
+        printf("setting identity as: %s\n", args->user_name);
+        zsock_set_identity(args->dealer, args->user_name);
+    } else {
+        zcert_apply(args->message_data.user_certificate, args->dealer);
+        zsock_set_curve_serverkey(args->dealer, router_key);
+        printf("setting identity as: %s\n", args->user_name);
+        zsock_set_identity(args->dealer, args->user_name); 
+    }     
+
+    // unlock mutex before trying to connect
+    pthread_mutex_unlock(&args->mutex);
 
     printf("Connecting to server...\n");
     int rc = zsock_connect(args->dealer, "tcp://localhost:5555"); 
     if (rc != 0) {
         printf("Unable to connect to port 5555\n");
-        pthread_mutex_unlock(&args->mutex);
+        free(username);
+        zcert_destroy(&server_cert);
+        // pthread_mutex_unlock(&args->mutex);
         return NULL;
     } 
-    printf("Connected to server...\n");   
+
+    // TODO: in case user registered,
+    // reconnect with his actual user cert
+
+    pthread_mutex_lock(&args->mutex);
 
     args->username_processed = true;    
 
+    args->connection_established = true;
+    
+    pthread_cond_signal(&args->connected);
+    printf("Connected to server...\n");   
+
     pthread_mutex_unlock(&args->mutex); 
     
+    free(username);
     zcert_destroy(&server_cert);    
+    // zcert_destroy(&user_cert);
 
     return NULL;
 }
@@ -880,8 +942,8 @@ void init_raylib(Receiver *args)
     bool go_to_registration = false;
 
     // use these keys for making a registration cert
-    uint8_t* public_key = (uint8_t*)"To4GoHUrI+@!h5i2a?)t5oy+..U6l(0&B&daCt!Y";
-    uint8_t* secret_key = (uint8_t*)"q%$<#.l!LqbIAyi80*yr1F27=VW$%}0t(HWY:9zU";
+    // uint8_t* public_key = (uint8_t*)"To4GoHUrI+@!h5i2a?)t5oy+..U6l(0&B&daCt!Y";
+    // uint8_t* secret_key = (uint8_t*)"q%$<#.l!LqbIAyi80*yr1F27=VW$%}0t(HWY:9zU";
 
     while (!WindowShouldClose())
     {
@@ -917,6 +979,11 @@ void init_raylib(Receiver *args)
             // get the user to input his username and password (or register an account?)
             // first username, then press enter or backspace, then password followed by backspace or enter for submission    
             if (go_to_login) {
+
+                pthread_mutex_lock(&args->mutex);
+                args->registered = true;
+                pthread_mutex_unlock(&args->mutex);
+
                 if (!username_submitted) {
                     // TODO: move this to a proper spot
                     DrawText("USERNAME: ", 10, 0, 50, WHITE);   
@@ -978,10 +1045,10 @@ void init_raylib(Receiver *args)
                 //     authenticated = true;
                 // }
 
-                if (password_printed){
-                    authenticated = true;
+                if (password_printed){ 
+                    authenticated = true;                   
                     free_user_input(&username, &username_string);
-                    free_user_input(&password, &password_string);
+                    free_user_input(&password, &password_string);                    
                 }
             }   
             
@@ -1040,24 +1107,20 @@ void init_raylib(Receiver *args)
                 if (password_submitted && password_string && !password_printed){
                     password_printed = true;
 
-                    // TODO: check if the  already exists on the router side!
-                    // send a registration msg to the router
-                    // [user id][registration key][user pub key]
-                    size_t user_name_len = strlen(username_string);
-
-                    // generate a user certificate
-                    zsys_dir_create("keys_client");
-
-                    // TODO: check is registration cert already exists?
-
-                    // This is a hack but will generate the same cert as is known by the router
-                    // else one would need to convert to z85 armored byte representation
+                    size_t user_name_len = strlen(username_string);                    
                     
-                    zcert_t *registration_cert = zcert_new_from(public_key, secret_key);
-                    zcert_save(registration_cert, "keys_client/registration.cert");
-                    printf("registration cert: \n");
+                    // use the registration cert
+                    const char *registration_cert_loc = "keys_client/registration.cert";
+                    zcert_t *registration_cert = zcert_load(registration_cert_loc);
+                    if (!registration_cert) {
+                        printf("[ERROR]: Couldn't find registration certificate\n");
+                        break;
+                    }
+
                     zcert_print(registration_cert);
 
+                    // generate a user certificate
+                    // zsys_dir_create("keys_client");
                     zcert_t *user_cert = zcert_new();
                     // get a text representation to get the length of the key, in the future maybe hardcode 40 for length
                     // const char* user_pub = zcert_public_txt(user_cert);
@@ -1100,15 +1163,24 @@ void init_raylib(Receiver *args)
                     args->message_data.registration_certificate = zcert_dup(registration_cert);
                     args->message_data.user_certificate = zcert_dup(user_cert);
 
-                    // send a signal that username can be processed
-                    // this should wake up the dedicated thread
-                    args->registration_msg = true;
-                    args->is_there_a_msg_to_send = true;     
-                    pthread_cond_signal(&args->send_cond);
                     // set user_name which is required by processing thread 
-                    args->user_name = strdup(username_string);         
-                    
+                    args->user_name = strdup(username_string); 
+                    // signal the processing thread that it can spin up and use this user name                          
                     pthread_cond_signal(&args->user_name_cond);
+                    
+                    // user connects to the router socket in the processing thread,
+                    // wait for connection to be established
+                    while (!args->connection_established) {
+                        pthread_cond_wait(&args->connected, &args->mutex);
+                    }
+                    pthread_mutex_unlock(&args->mutex);
+
+                    // once the username has been processed and connection has been made,
+                    // set the flags for sending the registration message and send a signal 
+                    // to the send_messages thread                                           
+                    args->is_there_a_msg_to_send = true;  
+                    args->registration_msg = true;   
+                    pthread_cond_signal(&args->send_cond);                                
 
                     pthread_mutex_unlock(&args->mutex);
 
@@ -1123,10 +1195,11 @@ void init_raylib(Receiver *args)
                 //     authenticated = true;
                 // }
 
-                if (password_printed){
+                if (password_printed){            
+                    // wait for the user to connect to the socket before proceeding
                     authenticated = true;
                     free_user_input(&username, &username_string);
-                    free_user_input(&password, &password_string);
+                    free_user_input(&password, &password_string);                    
                 }   
             }
         }
@@ -1300,7 +1373,9 @@ int main(int argc, char* argv[])
         .recipient = recipient,
         .user_name = NULL,
         .username_processed = false,
-        .registration_msg = false 
+        .registration_msg = false,
+        .connection_established = false,
+        .registered = false
     };   
 
     // mutex to prevent race conditions between the threads
@@ -1312,6 +1387,9 @@ int main(int argc, char* argv[])
 
     // init condition for user_name processing
     pthread_cond_init(&args.user_name_cond, NULL);
+
+    // cond for socket connection
+    pthread_cond_init(&args.connected, NULL);
 
     pthread_t process_user_input_thread;
     pthread_t receive_messages_thread;
